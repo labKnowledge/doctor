@@ -1,23 +1,30 @@
-"""Command line: system-check [area ...] | fix [n ...|all] | last | deep."""
+"""Command line: doctor [area ...] | fix [n ...|all] | i | ask | clean | deep [where] | pick N | malware | last."""
 import json, os, re, socket, subprocess, sys, tempfile, time
 
 from . import health, review, security  # noqa: F401  (registers the checks)
 from .core import AREAS, CHECKS, CRIT, INFO, OK, SKIP, WARN, Ctx, run_checks
 
-USAGE = """system-check — find out what's wrong with this computer and fix it
+USAGE = """doctor — find out what's wrong with this computer and fix it
 
-  system-check               full check-up: crashes, memory, disks, hardware, services, logs, updates, security
-  system-check fix           apply the safe fixes from the last check (asks for sudo once)
-  system-check fix 2 4       apply specific fixes by number (also the ones marked "review"); "system-check 2 4" works too
-  system-check fix all       apply every fix, including the "review" ones
-  system-check i             interactive: check, open issues, fix on the go, plus focused checks
-                             (top, ports, svc NAME, logs, boot, kills, temps, net, disk, deep)
-  system-check last          show the last report again
-  system-check deep          check-up plus a full rootkit/malware scan (a few minutes)
-  system-check memory disk   check only some areas: """ + " ".join(AREAS) + """
+  doctor               full check-up: crashes, memory, disks, hardware, services, logs, updates, security
+  doctor fix           apply the safe fixes from the last check (asks for sudo once)
+  doctor fix 2 4       apply specific fixes by number (also the ones marked "review"); "doctor 2 4" works too
+  doctor i             interactive: check, fix on the go, ask the assistant, look closer at anything
+  doctor ask "..."     ask the assistant about this computer (uses the last report; read-only)
+
+  Free disk space
+  doctor clean         clear caches that rebuild themselves (safe, no questions)
+  doctor deep [where]  list big things that are safe to remove; where = system (default), storage, a folder
+  doctor pick 1 3 5-7  delete those items from the last deep scan
+
+  Look closer: top ports kills temps net boot logs [NAME] history · last (the last report again)
+  doctor malware       check-up plus a full rootkit/malware scan (a few minutes)
+  doctor memory disk   check only some areas: """ + " ".join(AREAS) + """
 
   Options: --json (machine-readable)  --no-sudo (skip root checks)  -y (no confirmation)
+  The old names still work: system-check, disk-clean, deep, pick.
 """
+
 
 ICON = {CRIT: "✗", WARN: "!", INFO: "i", OK: "✓", SKIP: "-"}
 COLOR = {CRIT: "31", WARN: "33", INFO: "36", OK: "32", SKIP: "2"}
@@ -29,7 +36,7 @@ def c(code, s):
 
 
 def state_dir():
-    d = os.environ.get("SYSTEM_CHECK_DATA") or os.path.join(Ctx().home, ".local/state/system-check")
+    d = os.environ.get("DOCTOR_DATA") or os.path.join(Ctx().home, ".local/state/doctor")
     os.makedirs(os.path.join(d, "reports"), mode=0o700, exist_ok=True)
     return d
 
@@ -71,7 +78,7 @@ def render(report, verbose=False):
     out = []
     when = time.strftime("%a %b %d %H:%M", time.localtime(report["time"]))
     mode = "full" if report["sudo"] else "limited (no sudo: some checks skipped)"
-    out.append(c("1", f"system-check · {report['host']} · {when} · {mode} · {report['took']}s"))
+    out.append(c("1", f"doctor · {report['host']} · {when} · {mode} · {report['took']}s"))
     area = None
     for f in report["findings"]:
         if f["area"] != area:
@@ -94,10 +101,10 @@ def render(report, verbose=False):
         safe = [str(x["n"]) for x in fixes if x["safe"]]
         pick = " ".join([str(x["n"]) for x in fixes if not x["safe"]][:2]) or "1"
         if safe:
-            out.append(f"\nRun {c('1', 'system-check fix')} to apply the safe ones ({', '.join(safe)}),"
-                       f" or pick by number: {c('1', 'system-check fix ' + pick)}   From chat: !sysfix")
+            out.append(f"\nRun {c('1', 'doctor fix')} to apply the safe ones ({', '.join(safe)}),"
+                       f" or pick by number: {c('1', 'doctor fix ' + pick)}   From chat: !sysfix")
         else:
-            out.append(f"\nThese need your decision; pick by number: {c('1', 'system-check fix ' + pick)}   From chat: !sysfix {pick}")
+            out.append(f"\nThese need your decision; pick by number: {c('1', 'doctor fix ' + pick)}   From chat: !sysfix {pick}")
     elif count[CRIT] + count[WARN] == 0:
         out.append("Nothing needs attention.")
     return "\n".join(out)
@@ -136,6 +143,32 @@ def parse_numbers(args, maximum):
     return sorted(picked)
 
 
+def log_fixes(group, ok):
+    """Remember what was changed on this computer, so `history` can show it (and how to undo)."""
+    with open(os.path.join(state_dir(), "fixes.log"), "a") as fh:
+        for f in group:
+            undo = next((d for d in f["detail"] if d.startswith("Undo")), "")
+            fh.write(json.dumps({"time": time.time(), "label": f["fix"]["label"], "cmd": f["fix"]["cmd"],
+                                 "ok": ok, "undo": undo}) + "\n")
+
+
+def show_history(limit=30):
+    try:
+        with open(os.path.join(state_dir(), "fixes.log")) as fh:
+            rows = [json.loads(l) for l in fh if l.strip()][-limit:]
+    except (OSError, ValueError):
+        rows = []
+    if not rows:
+        print("doctor hasn't changed anything on this computer yet.")
+        return
+    print(c("1", "What doctor changed on this computer") + c("2", "  (newest last)"))
+    for r in rows:
+        when = time.strftime("%b %d %H:%M", time.localtime(r["time"]))
+        print(f"  {when}  {c('32', '✓') if r['ok'] else c('31', '✗')} {r['label']}")
+        if r.get("undo"):
+            print(c("2", f"                {r['undo']}"))
+
+
 def apply_fixes(chosen):
     """Run the chosen findings' fixes (root ones under one sudo prompt), streaming output. Returns how many failed."""
     ctx = Ctx()
@@ -154,7 +187,7 @@ def apply_fixes(chosen):
         os.chmod(fh.name, 0o700)
         if root and not ctx.is_root:
             if not ctx.sudo and not sys.stdin.isatty():
-                print("These fixes need sudo, which needs a password: run `system-check fix` in a terminal.")
+                print("These fixes need sudo, which needs a password: run `doctor fix` in a terminal.")
                 failed += len(group)
                 os.remove(fh.name)
                 continue
@@ -163,11 +196,15 @@ def apply_fixes(chosen):
             argv = ["runuser", "-u", ctx.user, "--", "bash", fh.name]
         else:
             argv = ["bash", fh.name]
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, errors="replace")
-        for line in proc.stdout:  # stream: apt and snap fixes can take a while
-            print(c("31", line.rstrip()) if line.strip() == "FAILED" else line.rstrip(), flush=True)
-            failed += line.strip() == "FAILED"
-        proc.wait()
+        done = 0
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, errors="replace") as proc:
+            for line in proc.stdout:  # stream: apt and snap fixes can take a while
+                print(c("31", line.rstrip()) if line.strip() == "FAILED" else line.rstrip(), flush=True)
+                done += line.strip() == "done"
+        if done < len(group) and argv[0] == "sudo" and proc.returncode:
+            print(c("31", "    Not applied: sudo was refused (wrong password or cancelled)."))
+        failed += len(group) - done  # a fix only counts once it printed "done"
+        log_fixes(group, ok=done == len(group))
         os.remove(fh.name)
 
     return failed
@@ -181,7 +218,7 @@ def do_fix(args, yes, no_sudo):
         report = scan(ctx)
         print(render(report))
         if args:
-            print("\nNumbers may have changed. Pick again with: system-check fix <numbers>")
+            print("\nNumbers may have changed. Pick again with: doctor fix <numbers>")
             return 1
     fixes = [f for f in report["findings"] if f.get("fix")]
     if not fixes:
@@ -193,7 +230,7 @@ def do_fix(args, yes, no_sudo):
         try:
             nums = parse_numbers(args, len(fixes))
         except ValueError as e:
-            print(f"system-check fix: {e}", file=sys.stderr)
+            print(f"doctor fix: {e}", file=sys.stderr)
             return 2
         chosen = [f for f in fixes if f["fix"]["n"] in nums]
     else:
@@ -222,11 +259,11 @@ def do_fix(args, yes, no_sudo):
     for f in fresh:
         if f["check"] in names:
             print(f"  {c(COLOR[f['level']], ICON[f['level']])} {f['title']}")
-    print(f"\n{len(chosen) - failed} of {len(chosen)} fix(es) applied. Run system-check for the full picture.")
+    print(f"\n{len(chosen) - failed} of {len(chosen)} fix(es) applied. Run doctor for the full picture.")
     return 1 if failed else 0
 
 
-def do_deep(no_sudo):
+def do_malware(no_sudo):
     ctx = get_sudo(no_sudo)
     scanner = "/usr/local/sbin/weekly-security-scan.sh"
     if ctx.sudo and os.path.exists(scanner):
@@ -258,23 +295,55 @@ def main(argv=None):
         print(USAGE)
         return 0
     if args and re.fullmatch(r"[\d,\-]+|all", args[0]):
-        args.insert(0, "fix")  # `system-check 2 4` means fix 2 and 4
-    cmd = args.pop(0) if args and args[0] in ("fix", "last", "deep", "i", "interactive") else "check"
+        args.insert(0, "fix")  # `doctor 2 4` means fix 2 and 4
+    LOOK = ("top", "ports", "kills", "temps", "net", "boot", "logs", "history")
+    SPACE = ("clean", "deep", "pick")
+    cmd = args.pop(0) if args and args[0] in ("fix", "last", "malware", "rootkit", "i", "interactive", "ask", "explain") + LOOK + SPACE else "check"
+    if cmd in SPACE:
+        from . import clean
+        if as_json:  # the library's own CLI already speaks JSON
+            from disk_clean.cli import main as disk_main
+            return disk_main([{"clean": "quick"}.get(cmd, cmd), *args, "--json"])
+        if cmd == "pick" and not args:
+            print("Which items? doctor pick 1 3 5-7   (numbers from doctor deep)")
+            return 2
+        return {"clean": clean.clean, "deep": lambda: clean.deep(" ".join(args) or None),
+                "pick": lambda: clean.pick(args)}[cmd]()
+    if cmd in LOOK or cmd in ("ask", "explain"):
+        from .interactive import Session
+        s = Session(Ctx(use_sudo=not no_sudo), sys.modules[__name__])
+        if cmd in LOOK:
+            getattr(s, cmd)(*([" ".join(args)] if cmd == "logs" else []))
+            return 0
+        s.report = load_last() or scan(s.ctx, quiet=True)
+        s.mode = "cli"
+        s._number()
+        if cmd == "explain":
+            if not (args and args[0].isdigit()):
+                print("Which issue? doctor explain 3   (numbers as in doctor i)")
+                return 2
+            s.explain(int(args[0]))
+        elif args:
+            s.ask(" ".join(args))
+        else:
+            print('Ask a question: doctor ask "why is my computer slow?"')
+            return 2
+        return 0
     if cmd in ("i", "interactive"):
         if not sys.stdin.isatty():
-            print("Interactive mode needs a terminal. In chat use: system-check, then system-check fix 2 4", file=sys.stderr)
+            print("Interactive mode needs a terminal. In chat use: doctor, then doctor fix 2 4", file=sys.stderr)
             return 2
         from .interactive import Session
         return Session(get_sudo(no_sudo), sys.modules[__name__]).run()
 
     if cmd == "fix":
         return do_fix(args, yes, no_sudo)
-    if cmd == "deep":
-        return do_deep(no_sudo)
+    if cmd in ("malware", "rootkit"):
+        return do_malware(no_sudo)
     if cmd == "last":
         report = load_last()
         if not report:
-            print("No check has run yet. Run: system-check")
+            print("No check has run yet. Run: doctor")
             return 1
     else:
         bad = [a for a in args if a not in AREAS]

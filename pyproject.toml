@@ -3,12 +3,19 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "system-check"
+name = "doctor"
 version = "1.0.0"
-description = "One command to diagnose a Linux desktop (crashes, memory, disks, hardware, services, logs, updates, security) and apply the fixes you pick"
+description = "One command to diagnose a Linux desktop (crashes, memory, disks, hardware, services, logs, updates, security), free disk space safely, and apply the fixes you pick"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
-system-check = "system_check.cli:main"
+doctor = "doctor.cli:main"
+disk-clean = "disk_clean.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+disk_clean = ["quick.sh"]

@@ -1,7 +1,7 @@
 """Stability, memory, disk, hardware, services, logs, updates and network checks."""
-import collections, glob, json, os, re, shlex, time
+import collections, glob, json, os, re, shlex, sys, time
 
-from .core import CRIT, INFO, OK, SKIP, WARN, check, finding, fix, human, normalize, read
+from .core import CRIT, INFO, LAUNCHER, OK, SKIP, WARN, check, finding, fix, human, normalize, read, where_hint
 
 SINCE = "7 days ago"
 OOMD_DROPIN = "/etc/systemd/system/user@.service.d/90-oomd-relaxed.conf"
@@ -219,9 +219,10 @@ def space(ctx):
         sys_disk = mnt in ("/", "/home", "/var", "/boot", "/boot/efi")
         level = CRIT if pct >= 97 or (sys_disk and size > 20 << 30 and avail < 2 << 30) else WARN if pct >= 90 else None
         if level:
-            f = fix("Clear rebuildable caches with disk-clean (then use `disk-clean deep` for bigger items)",
-                    "disk-clean", root=False) if mnt in ("/", "/home") and ctx.has("disk-clean") else None
-            res.append(finding(level, f"{mnt} is {pct}% full ({human(avail)} free of {human(size)})", [], f))
+            f = fix("Clear caches that rebuild themselves (package managers, Docker leftovers, app caches)",
+                    f"{shlex.quote(sys.executable)} -I {shlex.quote(LAUNCHER)} clean", root=False) if mnt in ("/", "/home") else None
+            res.append(finding(level, f"{mnt} is {pct}% full ({human(avail)} free of {human(size)})",
+                               [f"See big things that are safe to remove: {where_hint(mnt)}  (then: doctor pick 1 3)"], f))
         else:
             okay.append(f"{mnt} {pct}%")
     for line in ctx.run("timeout 10 df -Pi -x tmpfs -x devtmpfs -x squashfs -x overlay -x vfat 2>/dev/null").splitlines()[1:]:
@@ -346,7 +347,7 @@ def _unit_diagnosis(ctx, unit, user):
     busy = m and not user and snap_busy(ctx, m.group(1).split(".")[0])
     if reason.startswith("it only failed to email"):
         conf = "/etc/chkrootkit/chkrootkit.conf"
-        f = fix(f"Let {unit} write its report to the log instead of email (system-check reads it)",
+        f = fix(f"Let {unit} write its report to the log instead of email (doctor reads it)",
                 f"sed -i 's/^MAILTO=.*/MAILTO=\"\"/' {conf}\n{sc}reset-failed {q}") if unit == "chkrootkit.service" and os.path.exists(conf) \
             else None
         if not f:
@@ -485,7 +486,7 @@ def app_errors(ctx):
         msg = e.get("MESSAGE")
         msg = msg if isinstance(msg, str) else ""
         if re.search(r"a password is required ; .*COMMAND=(/usr/bin/true|/usr/bin/bash -c|/bin/bash -c)", msg):
-            continue  # system-check's own "is sudo cached?" probe
+            continue  # doctor's own "is sudo cached?" probe
         key = (app_name(src), normalize(msg)[:90])
         groups[key] += 1
         sample.setdefault(key, msg.strip()[:160])

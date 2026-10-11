@@ -1,18 +1,27 @@
-# system-check
+# doctor
 
-One command that tells you what's wrong with this computer and fixes it.
+One command that tells you what's wrong with this computer, fixes it, and frees disk space safely.
 
 ```
-system-check            # full check-up, ~3 seconds; asks for sudo once (Ctrl+C skips root-only checks)
-system-check fix        # apply the safe fixes from the last check
-system-check fix 2 4    # apply specific fixes, including ones marked "review first" (or just: system-check 2 4)
-system-check last       # show the last report again
-system-check deep       # check-up + full rootkit scan (rkhunter + chkrootkit), a few minutes
-system-check security   # only some areas: stability memory disk hardware services logs updates network security
+doctor            # full check-up, ~3 seconds; asks for sudo once (Ctrl+C skips root-only checks)
+doctor fix        # apply the safe fixes from the last check
+doctor fix 2 4    # apply specific fixes, including ones marked "review first" (or just: doctor 2 4)
+doctor i          # interactive: walk the issues, fix on the go, ask the assistant, free space, look closer
+doctor ask "..."  # ask the assistant about this computer (read-only)
+
+doctor clean      # free space: clear caches that rebuild themselves (safe, unattended)
+doctor deep       # list big things safe to remove on the system drive; `deep storage` or `deep ~/Downloads`
+doctor pick 1 3   # delete those items from the last deep scan
+
+doctor history    # what doctor changed, with undo commands
+doctor last       # show the last report again
+doctor malware    # check-up + full rootkit scan (rkhunter + chkrootkit), a few minutes
+doctor security   # only some areas: stability memory disk hardware services logs updates network security
 ```
 
+The older commands `system-check`, `disk-clean`, `deep` and `pick` still work exactly as before (they're links to the same tool).
 Options: `--json`, `--no-sudo`, `-y` (no confirmation), `-v` (details for OK items too).
-Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!sysfix 2 4`.
+Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!sysfix 2 4`, `!sysask ...`, `!clean`, `!deep storage`, `!pick 1 3`.
 
 ## What it checks
 
@@ -29,25 +38,108 @@ Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!
 | network | default route, DNS, clock sync |
 | security | chkrootkit daily alerts (files owned by installed packages filtered out, flagged ports checked against what really listens), ufw, ports open to the network (incl. Docker ports that bypass ufw), sshd settings, fail2ban, failed/successful SSH logins, sudo failures, UID-0 and password-less accounts, NOPASSWD sudo, auto security updates, AppArmor, screen lock, ld.so.preload, programs running from /tmp or named like miners, outdated binaries still running, new startup items, authorized_keys changes, ~/.ssh and home permissions, world-writable system files, SUID in temp folders, last rkhunter/chkrootkit result |
 
+## Interactive mode
+
+`doctor i` checks everything, then shows only what needs attention (suggestions fold behind `more`).
+Press **Enter** to walk through the issues one by one: each card shows what's wrong and the exact commands its fix
+runs; Enter applies the fix (or moves on), `e` has the assistant explain it, `s` skips, `q` stops. The fixed check
+is re-run on the spot. Or type a number to jump to an issue, `f safe` for every safe fix, `history` for what
+doctor has changed (with undo commands), or ask anything in plain words.
+
+Look closer at one thing: `top` (memory/CPU right now), `ports` (what listens and who can reach it), `svc NAME`
+(status + log, then restart/stop/disable/enable), `logs [NAME]`, `boot` (slow startup), `kills` (low-memory kills),
+`temps`, `net` (router, internet, DNS, HTTPS timings), `disk` (usage and biggest caches), `malware`, any area name,
+`!command`. Free space without leaving: `clean`, `deep [storage|folder]`, `pick 1 3` (asks before deleting). Tab completes.
+The same focused checks work outside interactive mode: `doctor top`, `doctor ports`, ...
+
+## The assistant
+
+`e 3` in interactive mode, `doctor explain 3`, or `doctor ask "why is my PC slow?"` asks Claude (Claude
+Code's `claude` command) to explain in plain language: what it is, whether it matters, and which fix to apply.
+It is sandboxed read-only: a fixed list of read commands (journalctl, systemctl status, ss, ps, df, docker ps, ...),
+everything else refused without asking (`dontAsk`), no MCP servers, no user/project settings, and no reading of
+SSH keys, .env, credential or key files. It can look, never change; fixes stay with you. Without `claude`
+installed everything else works and the assistant hints are hidden. `DOCTOR_NO_AGENT=1` turns it off.
+
+## Free disk space
+
+The disk area warns when a drive fills up; its fix runs `doctor clean`, and the warning names the
+`deep` command for that drive. `clean` clears caches that rebuild themselves: package managers (conda, pip, npm,
+yarn, pnpm, bun, uv), Gradle logs, browser and thumbnail caches, the Trash, unused Flatpak runtimes, Docker
+leftovers (volumes kept), and editor caches only while those editors are closed. `deep` lists big things you
+might not need; nothing is deleted until you `pick` numbers.
+
+### What a deep scan finds
+
+Only things that live on the drive or folder you point it at:
+
+| Kind | What | When |
+|---|---|---|
+| build | `node_modules`, `build`, `dist`, `.next`, `target`, `.gradle`, `.venv`… | The project is idle 30+ days, the folder is real build output (it has the matching `package.json`, `build.gradle`…) and it isn't tracked in git |
+| model | Hugging Face cache models | Not loaded by any running program |
+| conda | conda environments | Unused 30+ days |
+| android | NDKs, emulator images, emulators | No project's `ndkVersion` uses it / no AVD uses it / idle 30+ days |
+| gradle | Gradle wrapper versions and their caches | No project's wrapper uses it |
+| docker | Docker volumes | Not attached to any container |
+| file | Single files of 1 GB+ | Untouched 90+ days, or an unfinished download |
+
+### Safety rules
+
+- Nothing is deleted at scan time.
+- Anything a running process holds is never listed, and is checked again right before deleting. That covers open files, working directories, binaries, memory-mapped files and paths in command lines.
+- Active and configured swap files are never listed.
+- Build folders count only inside real projects: a git repo, or a folder with `src/`. Folders under hidden app directories (editor extensions, tool installs) never count.
+- A scan expires after 24 hours; `pick` refuses to act on an old list.
+- NDK and Gradle suggestions appear only after every mounted data drive has been deep-scanned once, because before that it can't know what your projects use.
+- An old OS install on a data drive (a drive with `etc/` and `usr/` at its root) has its system folders skipped.
+
+### Tuning
+
+The constants at the top of `src/disk_clean/scan.py` control the behaviour: `IDLE_DAYS`, `BIG_FILE`, `BIG_FILE_DAYS`, `MIN_ITEM`, `MAX_ITEMS` and `TIME_BUDGET` (20 minutes, so chat commands finish before their 30-minute timeout). Scan state lives in `~/.cache/disk-clean`, or in `$DISK_CLEAN_DATA` if that's set.
+
+### Python API
+
+```python
+from disk_clean import scan, remove, quick_clean, last_scan, DiskCleanError
+
+result = scan("storage", on_progress=lambda p: print(p["dirs"], "folders"))
+for n, item in enumerate(result["items"], 1):
+    print(n, item["label"], item["size"], item["note"])
+
+remove("1 3 5-7")                         # by number from the last scan
+remove(None, ids=[result["items"][0]["id"]])  # or by stable item id (better for UIs)
+
+quick_clean(on_line=print)                # returns {"freed", "disk", "log"}
+```
+
+Each call that fails for a user-facing reason raises `DiskCleanError`, and its message is safe to show as-is. Without installing, add `src/` to `sys.path`, or run `python -m disk_clean`.
+
+Add `--json` to `clean`, `deep`, `pick` for the library's JSON output.
+
 ## Fixes
 
 Every fix is a short bash snippet shown by name before it runs. "Safe" fixes (relax the oomd killer,
 stop swapping to a hard drive, keep 1 GB of logs, enable auto security updates, lock the screen,
-tighten ~/.ssh...) run with plain `system-check fix`. Fixes that change behaviour you might rely on
+tighten ~/.ssh...) run with plain `doctor fix`. Fixes that change behaviour you might rely on
 (turn on the firewall, disable a broken service, key-only SSH) are marked "review first" and only
 run when picked by number. All root fixes go through one `sudo` prompt; after fixing, the affected
 checks run again.
 
 ## Layout
 
-- `src/system_check/core.py` – command runner (user/root, works under sudo too), findings, registry, parallel runner
-- `src/system_check/health.py` – stability, memory, disk, hardware, services, logs, updates, network
-- `src/system_check/security.py` – security checks
-- `src/system_check/review.py` – running-services review and "not needed?" suggestions
-- `src/system_check/cli.py` – rendering, report history, `fix`, `deep`
+- `src/doctor/core.py` – command runner (user/root, works under sudo too), findings, registry, parallel runner
+- `src/doctor/health.py` – stability, memory, disk, hardware, services, logs, updates, network
+- `src/doctor/security.py` – security checks
+- `src/doctor/review.py` – running-services review and "not needed?" suggestions
+- `src/doctor/cli.py` – rendering, report history, `fix`, `deep`
+- `src/doctor/interactive.py` – `doctor i`: walkthrough, prompt, rendering of focused checks
+- `src/doctor/probes.py` – focused checks as data (top, ports, kills, net, sensors)
+- `src/doctor/agent.py` – read-only Claude assistant (prompting, sandbox flags, streaming)
+- `src/doctor/clean.py` – `clean` / `deep` / `pick` on the command line and in interactive mode
+- `src/disk_clean/` – the disk space library (scan, remove, quick_clean, quick.sh); no doctor imports
 
 Add a check: write a function returning `finding(level, title, detail, fix(...))` and decorate it with
-`@check("area", "name")`. State and the last 30 reports live in `~/.local/state/system-check/`.
+`@check("area", "name")`. State and the last 30 reports live in `~/.local/state/doctor/`.
 
-Install: `./install.sh` (copies to `~/.local/lib/system-check`, links `~/bin/system-check`).
+Install: `./install.sh` (copies to `~/.local/lib/doctor`, links `doctor` and the older names `system-check`, `disk-clean`, `deep`, `pick` into `~/bin`).
 Tests: `python3 -m unittest discover -s tests`.

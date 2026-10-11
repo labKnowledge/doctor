@@ -9,6 +9,9 @@ AREAS = ["stability", "memory", "disk", "hardware", "services", "logs", "updates
 
 CHECKS = []  # (area, name, fn)
 
+# The command itself, so fixes can call back into it (e.g. `doctor clean`) wherever it is installed.
+LAUNCHER = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "bin", "doctor"))
+
 
 def check(area, name):
     def deco(fn):
@@ -71,6 +74,13 @@ def _sudo_cached():
         return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
+
+
+def where_hint(mount):
+    """What to type to see the big, safe-to-remove things on this mount."""
+    if mount in ("/", "/home"):
+        return "doctor deep"
+    return "doctor deep " + (os.path.basename(mount) if mount.startswith("/media/") else mount)
 
 
 def read(path, default=""):

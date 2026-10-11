@@ -119,7 +119,7 @@ def ssh(ctx):
                                    f"echo 'PasswordAuthentication no' >> {SSH_DROPIN}\nsshd -t && systemctl reload ssh", safe=False)))
         else:
             res.append(finding(INFO, "SSH uses password logins (no login keys set up)",
-                               ["Stronger: add your key with ssh-copy-id from your other machine, then re-run system-check."]))
+                               ["Stronger: add your key with ssh-copy-id from your other machine, then re-run doctor."]))
     if ctx.run("systemctl is-active fail2ban").strip() != "active":
         res.append(finding(WARN, "SSH is on but fail2ban (blocks password guessers) is not running", [],
                            fix("Start fail2ban", "systemctl enable --now fail2ban") if ctx.has("fail2ban-client") else
@@ -344,10 +344,10 @@ def malware_scan(ctx):
             res.append(finding(CRIT if listening or any("INFECTED" in a for a in alerts) else WARN,
                                f"chkrootkit daily scan ({age:.0f} day(s) ago) raised {len(alerts)} alert(s)",
                                alerts[:6] + ([f"{noise} more 'suspicious files' are normal files from installed packages."] if noise else []) +
-                               [f"Full output: {CHKROOTKIT_LOG}. Re-scan now: system-check deep"]))
+                               [f"Full output: {CHKROOTKIT_LOG}. Re-scan now: doctor malware"]))
     if not logs:
         if not daily:
-            res.append(finding(INFO, "No rootkit scan has run yet — run: system-check deep"))
+            res.append(finding(INFO, "No rootkit scan has run yet — run: doctor malware"))
         return res
     text = read(logs[-1])
     age = (time.time() - os.path.getmtime(logs[-1])) / 86400
@@ -360,7 +360,7 @@ def malware_scan(ctx):
         res.append(finding(WARN, f"Rootkit scan reported {len(warns)} warning(s) ({name})",
                            warns[:5] + ["Many are harmless after updates. Refresh the baseline after reviewing: sudo rkhunter --propupd"]))
     if age > 10:
-        res.append(finding(WARN, f"Last rootkit scan was {age:.0f} days ago", ["Run one now: system-check deep"]))
+        res.append(finding(WARN, f"Last rootkit scan was {age:.0f} days ago", ["Run one now: doctor malware"]))
     if not infected and not warns and age <= 10:
         res.append(finding(OK, f"Last rootkit scan clean ({age:.0f} day(s) ago)"))
     return res

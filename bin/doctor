@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+# Run doctor straight from this checkout, no install needed.
+# Linked as disk-clean, deep or pick it behaves as those older commands did.
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "src"))
+if os.path.basename(sys.argv[0]) in ("disk-clean", "deep", "pick"):
+    from disk_clean.cli import main
+else:
+    from doctor.cli import main
+sys.exit(main())
