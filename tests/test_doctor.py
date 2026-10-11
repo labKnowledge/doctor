@@ -133,6 +133,50 @@ class FreeSpace(unittest.TestCase):
         self.assertIn("disk-clean", r.stdout)
 
 
+class Learn(unittest.TestCase):
+    def test_session_opens_in_a_new_window_with_the_context(self):
+        """o: the context lands in files (never on a command line), and a new terminal window runs the launcher."""
+        import subprocess
+        from doctor import learn
+        bin_dir = os.path.join(TMP, "learn-bin")
+        os.makedirs(bin_dir, exist_ok=True)
+        for name, body in (("gnome-terminal", f'printf "%s\\n" "$@" > {TMP}/argv'),
+                           ("claude", f'printf "%s" "$3" > {TMP}/prompt-seen')):
+            with open(os.path.join(bin_dir, name), "w") as fh:
+                fh.write(f"#!/bin/sh\n{body}\n")
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+        env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "DISPLAY": ":0", "TMUX": "", "TERMINAL": ""}
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            script = learn.prepare(TMP, "Port 22", "note: $(touch /tmp/never) `x` \"q\"")
+            self.assertEqual(learn.open_window(script, "Learn: Port 22"), "gnome-terminal")
+            time.sleep(0.3)
+            self.assertIn(script, open(os.path.join(TMP, "argv")).read())
+            subprocess.run(["bash", script], input="\n", capture_output=True, text=True, env=os.environ)
+            self.assertIn("$(touch /tmp/never)", open(os.path.join(TMP, "prompt-seen")).read())
+            os.environ["DISPLAY"] = ""
+            self.assertEqual(learn.open_window(script, "x"), "", "no desktop: doctor offers to run it here instead")
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+class Knowledge(unittest.TestCase):
+    def test_rows_explain_themselves_in_plain_words(self):
+        from doctor import knowledge as k
+        self.assertIn("safe", k.port(False, "tcp", 5432, "postgres (12)"))
+        self.assertIn("Remote access", k.port(True, "tcp", 22, "sshd (1)"))
+        self.assertIn("bind it to 127.0.0.1", k.port(True, "tcp", 6379, "redis (9)"))
+        self.assertIn("hot", k.sensor("coretemp", "Core 0", "95°C"))
+        self.assertIn("healthy", k.sensor("nvme", "Composite", "40°C"))
+        self.assertIn("fan rests", k.sensor("dell", "fan1", "0 rpm"))
+        self.assertIn("Wi-Fi", k.network("router", 120, 10))
+        self.assertIn("background job", k.boot(28, "chkrootkit.service", False))
+        self.assertIn("kernel", k.kill("2026-10-10 02:59", "code (kernel)", "900 MB in RAM"))
+        self.assertIn("loop", k.log({"app": "x", "count": 500, "sample": "boom", "last": 0}))
+
+
 class Processes(unittest.TestCase):
     def test_end_asks_then_forces_a_stubborn_process(self):
         import subprocess
@@ -173,8 +217,15 @@ class Interactive(unittest.TestCase):
     def test_menu_and_screens_run_without_errors(self):
         """Drive `doctor i` in a pseudo-terminal through read-only screens (never a fix, never a sudo prompt)."""
         import fcntl, pty, re, select, struct, termios
+        # Scripted keys must never reach a real password prompt: this sudo always refuses, without asking.
+        fake = os.path.join(TMP, "no-sudo-bin")
+        os.makedirs(fake, exist_ok=True)
+        with open(os.path.join(fake, "sudo"), "w") as fh:
+            fh.write("#!/bin/sh\nexit 1\n")
+        os.chmod(os.path.join(fake, "sudo"), 0o755)
         pid, fd = pty.fork()
         if pid == 0:
+            os.environ["PATH"] = fake + os.pathsep + os.environ["PATH"]
             os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve().parent.parent / "bin/doctor"), "i", "--no-sudo"])
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 140, 0, 0))
         out = b""
@@ -196,11 +247,15 @@ class Interactive(unittest.TestCase):
         send("\x1b[B")                              # arrow down, then a letter jumps
         send("t", 3); send("\r", 2); send("\r", 2)   # Top apps (live): open the first one's card, back to the list
         send("s", 3); send("\x1b", 2)               # sort by CPU, Esc back to the menu
-        send("s", 4); send("/dbus\n", 4); send("\n")  # Services: search, then back
+        send("s", 5); send("/", 1); send("dbus\n", 4); send("\x1b", 1); send("\x1b", 2)  # Services: find, clear, back
+        for screen in "peukg":                      # Ports, Temperatures, Startup, App kills, Logs: move, then back
+            send(screen, 6); send("\x1b[B", 1); send("\x1b", 2)
+        send("r", 2); send("n", 2)                  # the rootkit scan asks first; n declines
         send("c", 15)                               # Check-up: scans, then the issue list
-        for line in ["more", "1", "s", "b", "q", "ports", "kills", "temps", "memory", "boot", "logs", "disk", "pick",
-                     "history", "nope", "help", "m"]:
+        for line in ["more", "1", "s", "b", "q", "memory", "disk", "pick", "history", "nope", "help"]:
             send(line + "\n", 2)
+        send("ports\n", 4); send("\x1b", 2)          # screens open from the command line too
+        send("m\n", 2)
         send("b", 2); send("\x1b", 2)               # Big files: the drive picker, Esc back
         send(":", 2); send("svc dbus\n", 3); send("m\n", 2)   # command line, a service, m from inside it
         send("\x18", 3)                             # Ctrl+X closes from the menu
@@ -208,17 +263,20 @@ class Interactive(unittest.TestCase):
         text = re.sub(r"\x1b\[[\d;?]*[a-zA-Z]", "", out.decode(errors="replace"))
         self.assertIn("Look closer", text)                 # the main menu comes first, no scan before it
         self.assertLess(text.index("Look closer"), text.index("Needs attention") if "Needs attention" in text else 10**9)
-        self.assertIn("Top apps · by memory", text)
+        self.assertIn("Top apps  ·", text)
         self.assertIn("started by", text)                 # a process card
-        self.assertIn("Top apps · by CPU", text)
-        self.assertIn("Matching 'dbus'", text)
+        self.assertIn("matching 'dbus'", text)
+        for title in ("Ports  ·", "Temperatures  ·", "Startup  ·", "App kills  ·", "Logs  ·"):
+            self.assertIn(title, text)
+        self.assertIn("▸", text)                           # the selected row explains itself
+        self.assertIn("Start it? y/N", text)
         self.assertIn("Check-up · limited", text)
         self.assertIn("[1/", text)
         self.assertGreaterEqual(text.count("[1/"), 2, "b went back to the first issue")
         self.assertIn("Unknown command 'nope'", text)
         self.assertIn("Where should I look?", text)
         self.assertIn("dbus.service", text)
-        self.assertGreaterEqual(text.count("Look closer"), 5, "every screen came back to the main menu")
+        self.assertGreaterEqual(text.count("Look closer"), 10, "every screen came back to the main menu")
         self.assertIn("Closed (Ctrl+X)", text)
         self.assertNotIn("Traceback", text)
 

@@ -70,6 +70,12 @@ wrong and the exact commands its fix runs; Enter applies the fix (or moves on), 
 `s` skips, `b` goes back one. The fixed check is re-run on the spot. Or type a number to jump to an issue,
 `f safe` for every safe fix, or ask anything in plain words.
 
+Every Look closer screen (Top apps, Ports, Network, Temperatures, Startup, App kills, Logs, Services) is a list you
+move through with the arrow keys (PgUp/PgDn/Home/End too). The selected row explains itself in plain words under the
+list ("Port 22 is SSH... Remote access: make sure you set this up on purpose"), `?` asks the assistant for more,
+Enter acts on it (open the program, the service, or the full log), `/` finds, `r` refreshes, Esc goes back.
+Live screens (Top apps, Temperatures) refresh by themselves. The plain-words notes live in `knowledge.py`.
+
 Top apps (`t`) is live: the biggest processes refresh every 2 seconds, with the app or service each belongs to.
 Enter (or its number) opens a process card: what it is, what started it, its command, and a plain warning when
 ending it would hurt (your desktop, sound, network, Docker). `k` ends it (asks first; if it ignores the request for
@@ -87,6 +93,17 @@ Look closer at one thing: `top` (memory/CPU right now), `ports` (what listens an
 `temps`, `net` (router, internet, DNS, HTTPS timings), `disk` (usage and biggest caches), `malware`, any area name,
 `!command`. Free space without leaving: `clean`, `deep [storage|folder]`, `pick 1 3` (asks before deleting). Tab completes.
 The same focused checks work outside interactive mode: `doctor top`, `doctor ports`, ...
+
+## Learn more with Claude
+
+`?` explains in a few lines; `o` (learn more) goes further: it opens a full Claude Code session in a **new terminal
+window** that already holds what you were looking at (the issue and its fix, the port, the process, the service's
+status and log, or the whole last check-up from the main menu's "Learn with Claude"). It's set up as a patient tutor:
+plain explanation first, then how it works underneath and the commands to see it yourself; it asks before changing
+anything. doctor stays where you were. Works from every list row, issue card, process card and service screen
+(`o 3` on the issue list). It uses GNOME Terminal, Konsole, kitty, Alacritty, WezTerm, Tilix, xterm and others
+(`$TERMINAL` first), a tmux window inside tmux, and without a desktop it offers to run in the same terminal.
+Each session's context is kept in `~/.local/state/doctor/learn/` (last 30); reopen one with `bash <folder>/run.sh`.
 
 ## The assistant
 
@@ -170,7 +187,9 @@ checks run again.
 - `src/doctor/cli.py` – rendering, report history, `fix`, `deep`
 - `src/doctor/interactive.py` – `doctor i`: main menu, issue list and walkthrough, rendering of focused checks
 - `src/doctor/procs.py` – processes: list, details, what owns them, ending safely (TERM, then KILL; sudo when not yours)
-- `src/doctor/menu.py` – the keyboard menu widget (arrows, letters, redraw, short-terminal fallback)
+- `src/doctor/menu.py` – the keyboard widgets: main menu, list screens (`browse`), one-key questions, typed fallback
+- `src/doctor/learn.py` – learn more: writes a session's context and opens Claude in a new terminal window
+- `src/doctor/knowledge.py` – plain-words notes for ports, sensors, network steps, startup items, kills and log lines
 - `src/doctor/probes.py` – focused checks as data (top, ports, kills, net, sensors)
 - `src/doctor/agent.py` – read-only Claude assistant (prompting, sandbox flags, streaming)
 - `src/doctor/clean.py` – `clean` / `deep` / `pick` on the command line and in interactive mode

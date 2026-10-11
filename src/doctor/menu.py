@@ -29,13 +29,27 @@ class Raw:
         sys.stdout.flush()
         return self
 
+    pending = None
+
     def key(self, timeout=None):
         """One key press, or None when `timeout` seconds pass without one."""
+        if self.pending:
+            b, self.pending = self.pending, None
+            return KEYS.get(b) or b.decode(errors="ignore")
         if timeout and not select.select([self.fd], [], [], timeout)[0]:
             return None
         b = os.read(self.fd, 1)
         if b == b"\x1b" and select.select([self.fd], [], [], 0.03)[0]:
-            b += os.read(self.fd, 6)
+            nxt = os.read(self.fd, 1)
+            if nxt not in (b"[", b"O"):
+                self.pending = nxt          # Esc, then a separate key typed quickly: keep that key
+                return BACK
+            b += nxt
+            while select.select([self.fd], [], [], 0.03)[0]:   # the rest of an arrow / PgUp / Home sequence
+                ch = os.read(self.fd, 1)
+                b += ch
+                if ch.isalpha() or ch == b"~":
+                    break
         return KEYS.get(b) or (b.decode(errors="ignore") if len(b) == 1 else "")
 
     def __exit__(self, *exc):
@@ -43,6 +57,15 @@ class Raw:
         sys.stdout.write("\x1b[?25h")
         sys.stdout.flush()
         termios.tcsetattr(self.fd, termios.TCSANOW, self.saved)
+
+
+def flush_input():
+    """Throw away keys typed ahead, so they can't answer a question (or a password prompt) nobody has seen yet."""
+    try:
+        import termios
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
 
 
 def can_redraw(lines):
@@ -137,8 +160,11 @@ def pause(c, text="Enter back to the menu"):
     return QUIT if k in (QUIT, "q") else BACK
 
 
-def key(prompt):
-    """Ask for one key press (no Enter needed). Returns the key, ENTER, BACK or QUIT; falls back to a typed line."""
+def key(prompt, flush=False):
+    """Ask for one key press (no Enter needed). Returns the key, ENTER, BACK or QUIT; falls back to a typed line.
+    flush=True first drops keys typed ahead (use it for yes/no questions)."""
+    if flush:
+        flush_input()
     sys.stdout.write(prompt)
     sys.stdout.flush()
     if not (sys.stdin.isatty() and can_redraw(0)):
@@ -168,10 +194,10 @@ class Column:
         return f"{text:>{self.width}}" if self.right else f"{text:<{self.width}}"
 
 
-def browse(c, title, about, load, columns, note=None, enter=None, actions=(), explain=None,
+def browse(c, title, about, load, columns, note=None, enter=None, actions=(), explain=None, learn=None,
            refresh=None, empty="Nothing to show.", footer_extra="", state=None):
     """A list you can move through: the selected row explains itself under the list (note), Enter acts on it,
-    letters run actions, ? asks the assistant, / searches, r reloads, Esc goes back.
+    letters run actions, ? asks the assistant, o opens a Claude session about it (learn), / searches, r reloads, Esc back.
 
     load() -> rows (reloaded on r, after actions, and every `refresh` seconds). enter(row) and each action
     (key, label, fn(row)) may print; the screen waits for a key afterwards unless fn returns "quiet".
@@ -180,10 +206,13 @@ def browse(c, title, about, load, columns, note=None, enter=None, actions=(), ex
     state = state if state is not None else {}
     sel, top, find = state.get("sel", 0), 0, ""
     keys = {k: (label, fn) for k, label, fn in actions}
-    fresh, loaded = True, []
+    fresh, loaded, first = True, [], True
     while True:
         if fresh:
-            loaded, fresh = load(), False
+            if first:
+                sys.stdout.write(c("2", f"{title}: loading...") + "\r")
+                sys.stdout.flush()
+            loaded, fresh, first = load(), False, False
         rows = loaded
         if find:
             rows = [r for r in rows if find in " ".join(col.cell(r) for col in columns).lower()]
@@ -212,7 +241,8 @@ def browse(c, title, about, load, columns, note=None, enter=None, actions=(), ex
             lines += [c("36", "  ▸ ") + wrapped[0] if wrapped else ""] + [f"    {w}" for w in wrapped[1:]]
             acts = "".join(f" · {k} {label}" for k, (label, _) in keys.items())
             lines += ["", c("2", f"  ↑↓ move{' · Enter ' + enter[0] if enter and rows else ''}{acts}"
-                                 f"{' · ? explain' if explain and rows else ''} · / find · r refresh{footer_extra} · Esc back")]
+                                 f"{' · ? explain' if explain and rows else ''}{' · o learn more' if learn and rows else ''}"
+                                 f" · / find · r refresh{footer_extra} · Esc back")]
             return [fit(l, width) for l in lines]
         action = None
         shown = 0
@@ -245,7 +275,7 @@ def browse(c, title, about, load, columns, note=None, enter=None, actions=(), ex
                         return BACK
                     elif k == "m":
                         return "menu"
-                    elif k in ("/", "r", "?") or (k == ENTER and enter) or k in keys:
+                    elif k in ("/", "r", "?") or (k == ENTER and enter) or k in keys or (k == "o" and learn):
                         action = k
         except KeyboardInterrupt:
             return BACK
@@ -266,6 +296,9 @@ def browse(c, title, about, load, columns, note=None, enter=None, actions=(), ex
         if action == "?":
             explain(row)
             result = None
+        elif action == "o":
+            learn(row)
+            continue   # it opens in another window; this list stays
         else:
             result = (enter[1] if action == ENTER else keys[action][1])(row)
             fresh = True   # an action may have changed what the list shows

@@ -69,11 +69,18 @@ class Ctx:
         return bool(self.run(f"command -v {shlex.quote(prog)}").strip())
 
 
+_SUDO = {}
+
+
 def _sudo_cached():
-    try:
-        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
+    """Whether sudo works without a password right now. Asked at most once a minute: every "no" lands in the auth log."""
+    if time.time() - _SUDO.get("at", 0) > 60 or _SUDO.get("ok"):
+        try:
+            _SUDO["ok"] = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            _SUDO["ok"] = False
+        _SUDO["at"] = time.time()
+    return _SUDO["ok"]
 
 
 def where_hint(mount):

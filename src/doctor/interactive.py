@@ -2,7 +2,7 @@
 list, where Enter walks through the issues (fix, explain, skip); m returns to the main menu from anywhere."""
 import os, re, shlex, shutil, signal, subprocess, sys, textwrap, time
 
-from . import agent, clean, knowledge, menu, probes, procs
+from . import agent, clean, knowledge, learn, menu, probes, procs
 from .health import log_errors
 from .menu import Column
 from .core import AREAS, CRIT, INFO, OK, RANK, SKIP, WARN, Ctx, human, run_checks
@@ -19,6 +19,7 @@ HELP = """
   m            back to the main menu
   3            open issue 3            f 3 5   fix several            f safe   every safe fix
   e 3          the assistant explains issue 3 in plain words
+  o 3          learn more: a full Claude session about issue 3 opens in a new window (doctor stays here)
   a question   ask the assistant anything: "is anydesk safe?", "why is the fan loud?"
   more         show the suggestions too                              r   check again
   history      what doctor changed on this computer, and how to undo it
@@ -46,6 +47,7 @@ MAIN = [
         ("c", "Check-up", "find what's wrong and fix it, one issue at a time"),
         ("l", "Last results", ""),
         ("a", "Ask the assistant", "any question about this computer, in plain words"),
+        ("o", "Learn with Claude", "a full session in a new window, holding this computer's last check-up"),
     ]),
     ("Disk space", [
         ("f", "Free up space", "clear caches that rebuild themselves, safe"),
@@ -184,6 +186,7 @@ class Session:
     def entries(self):
         hide = {"l"} if not self.cli.load_last() else set()
         hide |= {"a"} if not agent.available() else set()
+        hide |= {"o"} if not learn.available() else set()
         return [(title, [e for e in items if e[0] not in hide]) for title, items in MAIN]
 
     def render_main(self, sel):
@@ -246,17 +249,21 @@ class Session:
                    "u": self.look_boot, "k": self.look_kills, "g": self.look_logs}
         if key in screens:
             return screens[key]()
+        if key == "o":
+            report = self.report or self.cli.load_last()
+            facts = agent.condensed({"findings": report["findings"]}) if report else "No check-up has run yet."
+            return self.learn("this computer's health and how to keep it running well", facts) or None
         if key == "a":
             q = (self.input(self.c("1", "\nAsk › ")) or "").strip()
             if not q:
                 return
             self.ask(q)
-        else:
-            {"f": self.clean, "h": self.history, "r": self.malware}[key]()
+        elif {"f": self.clean, "h": self.history, "r": self.malware}[key]() == "quiet":
+            return   # nothing was shown (declined): no need to wait for a key
         return menu.pause(self.c)
 
     def checkup(self):
-        if not self.ctx.sudo and not self.no_sudo and sys.stdin.isatty():
+        if not self.ctx.sudo and not self.no_sudo and sys.stdin.isatty() and self.may_sudo("The full check-up"):
             print(self.c("2", "\nSome checks need sudo (firewall, open ports, accounts, drive health). "
                               "Enter your password, or press Ctrl+C to skip them."))
             try:
@@ -359,7 +366,7 @@ class Session:
                 continue
             f = self.card(n)
             while True:
-                keys = ("Enter fix it" if f.get("fix") else "Enter next") + " · e explain · s skip · b back · q list · m menu"
+                keys = ("Enter fix it" if f.get("fix") else "Enter next") + " · e explain" + (" · o learn more" if learn.available() else "") + " · s skip · b back · q list · m menu"
                 if agent.available():
                     keys += " · or ask about it"
                 a = self.input(self.c("2", f"    {keys} › "))
@@ -388,6 +395,8 @@ class Session:
                     break
                 if a.lower() in ("e", "explain", "?"):
                     self.explain(n)
+                elif a.lower() in ("o", "learn"):
+                    self.learn_issue(n)
                 elif a.isdigit():
                     return self.walk(int(a))
                 elif agent.available():
@@ -447,6 +456,14 @@ class Session:
             print("Which one? e 3")
             return
         self._agent(agent.explain_prompt(n, self.issues[n - 1], {"issues": self.issues, "findings": self.report["findings"]}, self.mode))
+
+    def learn_issue(self, n):
+        f = self.issues[n - 1]
+        fx = f.get("fix")
+        facts = (f"Issue: ({f['level']}, {f['area']}) {f['title']}\n" + "\n".join(f"  {d}" for d in f["detail"])
+                 + (f"\ndoctor offers a fix: {fx['label']} ({'safe' if fx['safe'] else 'review first'}); it runs:\n"
+                    + "\n".join(f"  $ {l}" for l in fx["cmd"].splitlines()) if fx else "\nNo automatic fix is offered."))
+        self.learn(f["title"], facts)
 
     def ask(self, question):
         if not self.report:
@@ -523,19 +540,23 @@ class Session:
                 whole = f" · a end the whole app ({d['group']} processes)"
             elif kind == "service":
                 whole = f" · a stop the service {d['unit'].replace('.service', '')}"
-            ask = " · ? explain" if agent.available() else ""
+            ask = (" · ? explain" if agent.available() else "") + (" · o learn more" if learn.available() else "")
             a = menu.key(dim(f"\n  k end it · f force it{whole}{ask} · Enter back › "))
             if a in ("k", "f"):
                 self.end_process(d, force=a == "f")
                 if not procs.detail(pid):
                     return
             elif a == "a" and whole:
-                if self.confirm(f"{'Stop' if kind == 'service' else 'End'} all of {d['app']}?"):
+                if self.confirm(f"{'Stop' if kind == 'service' else 'End'} all of {d['app']}?") and \
+                        (d["user_unit"] or self.may_sudo(f"Stopping {d['unit']}")):
                     code = procs.end_group(d["unit"], d["user_unit"])
                     print(self.c("32", "  Done.") if code == 0 else self.c("31", "  It didn't stop (see above)."))
                     return
             elif a == "?":
                 self._agent(agent.process_prompt(d, mode=self.mode))
+            elif a == "o":
+                self.learn(f"the process {d['name']} (PID {d['pid']})",
+                           "\n".join(f"{k}: {v}" for k, v in d.items() if k not in ("has_doctor",)))
             elif a in (menu.QUIT, "m"):
                 raise ToMenu()
             else:
@@ -553,13 +574,14 @@ class Session:
             return
         result = procs.end(d["pid"], force)
         if result == "needs sudo":
-            if not self.confirm(f"{d['name']} isn't yours (it runs as {'root' if d['uid'] == 0 else 'another user'}). Use sudo?"):
+            if not self.may_sudo(f"Ending {d['name']}") or not self.confirm(f"{d['name']} isn't yours (it runs as {'root' if d['uid'] == 0 else 'another user'}). Use sudo?"):
                 return
             result = procs.end_as_root(d["pid"], force)
         if result == "still running" and not force:
             print(self.c("33", "  It's still running 3 seconds later (busy, or ignoring the request)."))
             if self.confirm("Force it closed? Unsaved work in it is lost."):
-                result = procs.end_as_root(d["pid"], True) if d["uid"] != os.getuid() else procs.end(d["pid"], True)
+                result = procs.end(d["pid"], True) if d["uid"] == os.getuid() else \
+                    procs.end_as_root(d["pid"], True) if self.may_sudo(f"Ending {d['name']}") else "not ended"
         print({"ended": self.c("32", f"  ✓ {d['name']} ended."), "gone": "  It had already closed.",
                "still running": self.c("31", "  It's still running."), "not ended": self.c("31", "  Not ended (sudo refused).")}
               .get(result, result))
@@ -567,7 +589,51 @@ class Session:
             print(self.c("2", f"  It belongs to {d['unit']}, which may start it again. To stop it for good: s, then find the service."))
 
     def confirm(self, question):
-        return menu.key(f"  {question} " + self.c("2", "y/N › ")) in ("y", "Y")
+        return menu.key(f"  {question} " + self.c("2", "y/N › "), flush=True) in ("y", "Y")
+
+    def learn(self, topic, facts):
+        """o: open a Claude Code session about `topic` in a new terminal window, holding `facts`; doctor stays here."""
+        if not learn.available():
+            print("Learning sessions need Claude Code (the `claude` command).")
+            return
+        script = learn.prepare(self.cli.state_dir(), topic, facts,
+                               "If something needs fixing, doctor can do it: tell me which doctor screen or fix to use.")
+        where = learn.open_window(script, "Learn: " + topic)
+        if where:
+            print(self.c("36", f"  ↗ Opened a Claude session in a new {where} window: ") + topic[:70]
+                  + self.c("2", "  (doctor stays here)"))
+            return
+        if not self.confirm("No new window can open here (no desktop). Start the session in this terminal? doctor waits"):
+            return
+        self.in_plain_terminal(["bash", script])
+
+    def in_plain_terminal(self, argv):
+        """Run a full-screen program here with the terminal's normal keys (Ctrl+X is doctor's only while doctor reads)."""
+        try:
+            import termios
+            fd = sys.stdin.fileno()
+            mine = termios.tcgetattr(fd)
+            plain = termios.tcgetattr(fd)
+            plain[6][termios.VQUIT] = b"\x1c"
+            termios.tcsetattr(fd, termios.TCSANOW, plain)
+        except Exception:
+            mine = None
+        try:
+            subprocess.run(argv)
+        finally:
+            if mine:
+                termios.tcsetattr(fd, termios.TCSANOW, mine)
+
+    def may_sudo(self, what):
+        """Right before anything that can ask for the sudo password: honour --no-sudo, and drop keys typed ahead
+        so they can never become password attempts."""
+        if self.ctx.is_root:
+            return True
+        if self.no_sudo:
+            print(self.c("33", f"  {what} needs sudo, and doctor was started with --no-sudo."))
+            return False
+        menu.flush_input()
+        return True
 
     def ports(self):
         rows, full = probes.listeners(self.ctx)
@@ -636,6 +702,10 @@ class Session:
         if not os.path.exists(scanner):
             print("The rootkit scanner isn't set up; one of the security issues offers to set it up.")
             return
+        if not self.confirm("The rootkit scan takes a few minutes and needs sudo. Start it?"):
+            return "quiet"
+        if not self.may_sudo("The rootkit scan"):
+            return
         print("Running rkhunter + chkrootkit (a few minutes, Ctrl+C stops)...")
         subprocess.run(f"{'' if self.ctx.is_root else 'sudo '}bash {scanner}", shell=True)
         self.scan(["security"])
@@ -693,17 +763,24 @@ class Session:
         print()
         subprocess.run(f"systemctl {flag}status {q} --no-pager -n 0 | head -10", shell=True)
         subprocess.run(f"{unit_log} -n 12 -o short-precise | cut -c1-200", shell=True)
-        ask = " · ? explain, or ask about it" if agent.available() else ""
+        ask = (" · ? explain, or ask about it" if agent.available() else "") + (" · o learn more" if learn.available() else "")
         while True:
             raw = (self.input(self.c("1", f"\n{u}: ") + "r restart · s stop · t start · d disable · e enable · l more log"
                               + ask + " · Enter back · m menu › ") or "").strip()
             a = raw.lower()
+            if a in ("o", "learn"):
+                self.learn(f"the {u} service", f"{'User' if user else 'System'} service {u}.\nStatus:\n"
+                           + self.ctx.run(f"systemctl {flag}status {q} --no-pager -n 0 | head -15")
+                           + "\nRecent log:\n" + self.ctx.run(f"{unit_log} -n 30 -o short"))
+                continue
             if a in ("?", "x", "explain") or (len(raw) > 2 and agent.available() and a not in ("log", "menu", "back")):
                 status = self.ctx.run(f"systemctl {flag}status {q} --no-pager -n 0 | head -15")
                 log = self.ctx.run(f"{unit_log} -n 40 -o short")
                 self._agent(agent.service_prompt(u, user, status, log, None if len(raw) <= 2 or a == "explain" else raw, self.mode))
                 continue
             verb = {"r": "restart", "s": "stop", "t": "start", "d": "disable --now", "e": "enable --now"}.get(a)
+            if verb and not user and not self.may_sudo(f"Changing {u}"):
+                continue
             if verb:
                 subprocess.run(f"{'' if user or self.ctx.is_root else 'sudo '}systemctl {flag}{verb} {q}; "
                                f"echo \"now: $(systemctl {flag}is-active {q}), $(systemctl {flag}is-enabled {q} 2>/dev/null) at boot\"", shell=True)
@@ -723,6 +800,10 @@ class Session:
         kw.setdefault("explain", (lambda r: self._agent(agent.row_prompt(title, about, row_text(r),
                                                                          kw["note"](r) if kw.get("note") else "", self.mode)))
                       if agent.available() else None)
+        topic = lambda r: f"{title}: " + " ".join(c.cell(r).strip() for c in columns[:3] if c.cell(r).strip())
+        kw.setdefault("learn", (lambda r: self.learn(topic(r), f"Screen: {title} ({about})\nRow: {row_text(r)}\n"
+                                                      + (f"doctor's note: {kw['note'](r)}" if kw.get("note") else "")))
+                      if learn.available() else None)
         if menu.browse(self.c, title, about, load, columns, **kw) == "menu":
             raise ToMenu()
 
@@ -928,6 +1009,12 @@ class Session:
             self.show(everything=cmd in ("more", "ok", "all"))
         elif cmd in ("f", "fix"):
             self.fix(self.choose(args) if args else ([self.current] if self.current else []))
+        elif cmd in ("o", "learn"):
+            n = int(args[0]) if args and args[0].isdigit() else (self.issues.index(self.current) + 1 if self.current in self.issues else 0)
+            if 1 <= n <= len(self.issues):
+                self.learn_issue(n)
+            else:
+                print("Which one? o 3")
         elif cmd in ("e", "explain"):
             self.explain(int(args[0]) if args and args[0].isdigit() else None)
         elif cmd in ("r", "recheck", "rescan"):
