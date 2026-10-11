@@ -40,11 +40,47 @@ Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!
 
 ## Interactive mode
 
-`doctor i` checks everything, then shows only what needs attention (suggestions fold behind `more`).
-Press **Enter** to walk through the issues one by one: each card shows what's wrong and the exact commands its fix
-runs; Enter applies the fix (or moves on), `e` has the assistant explain it, `s` skips, `q` stops. The fixed check
-is re-run on the spot. Or type a number to jump to an issue, `f safe` for every safe fix, `history` for what
-doctor has changed (with undo commands), or ask anything in plain words.
+`doctor i` opens on a main menu of everything doctor can do, with a one-line glance at this computer (uptime, RAM,
+how full each drive is) that takes no time to gather. Nothing is scanned until you ask:
+
+```
+doctor · you@host · up 5h · RAM 11G of 31G  ·  disks / 69%  backup 69%  storage 85%
+
+Check and fix
+  › c  Check-up               find what's wrong and fix it, one issue at a time
+    l  Last results           8 to look at, from 6 min ago
+    a  Ask the assistant      any question about this computer, in plain words
+Disk space
+    f  Free up space          clear caches that rebuild themselves, safe
+    b  Big files and folders  find what's safe to delete on a drive
+Manage
+    s  Services               2 failing · start, stop, turn off at boot
+    h  History                what doctor changed, and how to undo it
+Look closer
+    t  Top apps · p Ports · n Network · e Temperatures · u Startup · k App kills · g Logs · r Rootkit scan
+```
+
+Arrow keys and Enter, or press an entry's letter. `:` opens the command line (`help` lists every command),
+`q` goes back one level (issue card → issue list → main menu → quit), `m` jumps to the main menu from anywhere,
+and **Ctrl+X** closes doctor from anywhere, even mid-task. On a terminal too short for the menu, type the letter and Enter.
+
+The check-up asks for sudo once (Ctrl+C skips the root-only checks), then shows only what needs attention
+(suggestions fold behind `more`). Press **Enter** to walk through the issues one by one: each card shows what's
+wrong and the exact commands its fix runs; Enter applies the fix (or moves on), `e` has the assistant explain it,
+`s` skips, `b` goes back one. The fixed check is re-run on the spot. Or type a number to jump to an issue,
+`f safe` for every safe fix, or ask anything in plain words.
+
+Top apps (`t`) is live: the biggest processes refresh every 2 seconds, with the app or service each belongs to.
+Enter (or its number) opens a process card: what it is, what started it, its command, and a plain warning when
+ending it would hurt (your desktop, sound, network, Docker). `k` ends it (asks first; if it ignores the request for
+3 seconds, offers to force it), `f` forces it, `a` ends the whole app or stops its service, `?` has the assistant
+explain it. Processes of root or other users go through sudo. `s` switches between sorting by memory and by CPU.
+From the command line: `kill PID` opens the same card.
+
+Manage services: `services` lists every service (system and yours) in one numbered list, with problems first and then
+what's running, biggest first. `/word` searches, `all` adds the ones not running, and `user`/`system` narrow it down.
+Type a number to see its status and log, then `r` restart, `s` stop, `t` start, `d` disable, `e` enable,
+`?` for the assistant to explain what it is and whether you need it, or type any question about it.
 
 Look closer at one thing: `top` (memory/CPU right now), `ports` (what listens and who can reach it), `svc NAME`
 (status + log, then restart/stop/disable/enable), `logs [NAME]`, `boot` (slow startup), `kills` (low-memory kills),
@@ -132,7 +168,9 @@ checks run again.
 - `src/doctor/security.py` – security checks
 - `src/doctor/review.py` – running-services review and "not needed?" suggestions
 - `src/doctor/cli.py` – rendering, report history, `fix`, `deep`
-- `src/doctor/interactive.py` – `doctor i`: walkthrough, prompt, rendering of focused checks
+- `src/doctor/interactive.py` – `doctor i`: main menu, issue list and walkthrough, rendering of focused checks
+- `src/doctor/procs.py` – processes: list, details, what owns them, ending safely (TERM, then KILL; sudo when not yours)
+- `src/doctor/menu.py` – the keyboard menu widget (arrows, letters, redraw, short-terminal fallback)
 - `src/doctor/probes.py` – focused checks as data (top, ports, kills, net, sensors)
 - `src/doctor/agent.py` – read-only Claude assistant (prompting, sandbox flags, streaming)
 - `src/doctor/clean.py` – `clean` / `deep` / `pick` on the command line and in interactive mode

@@ -1,6 +1,6 @@
 """Focused checks as data: what runs right now, who listens where, low-memory kills, network timings, sensors.
 Pure gathering; interactive.py (and anything else) decides how to show it."""
-import glob, os, re, shlex, time
+import glob, os, re, shlex, shutil, time
 
 from .core import read
 from .health import app_name, meminfo, psi, top_processes
@@ -101,3 +101,70 @@ def sensors(ctx):
     if freqs:
         rows.append(("cpu", "speed", f"{min(freqs) / 1e6:.1f}-{max(freqs) / 1e6:.1f} GHz on {len(freqs)} cores"))
     return rows
+
+
+def all_services(ctx):
+    """Every service the user could manage, system and user: [{unit, user, active, sub, boot, mem, desc}].
+    Templates, aliases and masked units are left out; static units that aren't running stay out of the default view."""
+    from .review import anon_memory
+    rows = []
+    for user in (False, True):
+        flag = "--user " if user else ""
+        boot = {}
+        for line in ctx.run(f"systemctl {flag}list-unit-files --type=service --no-legend --plain").splitlines():
+            p = line.split()
+            if len(p) >= 2:
+                boot[p[0]] = p[1]
+        units = {}
+        for line in ctx.run(f"systemctl {flag}list-units --type=service --all --no-legend --plain").splitlines():
+            p = line.split(None, 4)
+            if len(p) >= 4 and p[1] != "not-found":
+                units[p[0]] = {"active": p[2], "sub": p[3], "desc": p[4] if len(p) > 4 else ""}
+        for name, state in boot.items():
+            if name not in units and "@." not in name and state in ("enabled", "disabled", "static", "indirect"):
+                units[name] = {"active": "inactive", "sub": "dead", "desc": ""}
+        running = [n for n, u in units.items() if u["active"] in ("active", "reloading", "activating")]
+        cg = {}
+        if running:
+            out = ctx.run(f"systemctl {flag}show -p Id -p ControlGroup " + " ".join(shlex.quote(n) for n in running))
+            for block in out.split("\n\n"):
+                p = dict(l.split("=", 1) for l in block.splitlines() if "=" in l)
+                if p.get("Id"):
+                    cg[p["Id"]] = p.get("ControlGroup", "")
+        for name, u in units.items():
+            if "@." in name or name.startswith("user@") or boot.get(name) in ("masked", "alias"):
+                continue
+            rows.append({"unit": name, "user": user, "active": u["active"], "sub": u["sub"], "desc": u["desc"],
+                         "boot": boot.get(name, "transient"), "mem": anon_memory(cg.get(name, ""))})
+    return rows
+
+
+def glance(ctx):
+    """What the main menu shows at once, in well under a second: uptime, RAM, how full each drive is, failing services."""
+    m = meminfo()
+    drives = []
+    media = f"/media/{ctx.user}"
+    for path in ["/"] + sorted(os.path.join(media, d) for d in (os.listdir(media) if os.path.isdir(media) else [])):
+        if path == "/" or os.path.ismount(path):
+            try:
+                u = shutil.disk_usage(path)
+            except OSError:
+                continue
+            drives.append(("/" if path == "/" else os.path.basename(path), round(u.used * 100 / u.total) if u.total else 0))
+    failed = sum(len(ctx.run(f"systemctl {flag}--failed --no-legend --plain").strip().splitlines()) for flag in ("", "--user "))
+    return {"uptime": float((read("/proc/uptime") or "0").split()[0]), "ram_used": m["MemTotal"] - m["MemAvailable"],
+            "ram_total": m["MemTotal"], "drives": drives, "failed": failed}
+
+
+def boot_times(ctx, limit=25):
+    """What took longest at the last startup: [(seconds, unit, user)], slowest first."""
+    rows = []
+    for flag, user in (("", False), ("--user ", True)):
+        for line in ctx.run(f"systemd-analyze {flag}blame --no-pager 2>/dev/null").splitlines():
+            p = line.split()
+            if len(p) < 2:
+                continue
+            secs = sum(float(v) * {"min": 60, "s": 1, "ms": 0.001, "us": 1e-6}[u]
+                       for v, u in re.findall(r"([\d.]+)(min|ms|us|s)", " ".join(p[:-1])))
+            rows.append((secs, p[-1], user))
+    return sorted(rows, reverse=True)[:limit]

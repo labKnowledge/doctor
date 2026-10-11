@@ -9,7 +9,7 @@ USAGE = """doctor — find out what's wrong with this computer and fix it
   doctor               full check-up: crashes, memory, disks, hardware, services, logs, updates, security
   doctor fix           apply the safe fixes from the last check (asks for sudo once)
   doctor fix 2 4       apply specific fixes by number (also the ones marked "review"); "doctor 2 4" works too
-  doctor i             interactive: check, fix on the go, ask the assistant, look closer at anything
+  doctor i             interactive: a menu of everything doctor does (check-up, space, services, ...)
   doctor ask "..."     ask the assistant about this computer (uses the last report; read-only)
 
   Free disk space
@@ -334,7 +334,7 @@ def main(argv=None):
             print("Interactive mode needs a terminal. In chat use: doctor, then doctor fix 2 4", file=sys.stderr)
             return 2
         from .interactive import Session
-        return Session(get_sudo(no_sudo), sys.modules[__name__]).run()
+        return Session(Ctx(use_sudo=not no_sudo), sys.modules[__name__], no_sudo).run()  # sudo is asked for at the check-up
 
     if cmd == "fix":
         return do_fix(args, yes, no_sudo)

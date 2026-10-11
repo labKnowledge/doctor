@@ -33,7 +33,7 @@ def app_name(unit_path):
     s = re.sub(r"^(app-gnome-|app-flatpak-|app-|snap\.)", "", s)
     known = {"code.code": "VS Code", "code": "VS Code", "google-chrome": "Google Chrome",
              "com.google.Chrome": "Google Chrome", "org.gnome.Terminal": "Terminal",
-             "firefox.firefox": "Firefox", "cursor": "Cursor"}
+             "firefox.firefox": "Firefox", "cursor": "Cursor", "vte-spawn": "Terminal"}
     return known.get(s, s)
 
 
@@ -471,10 +471,11 @@ def kernel_errors(ctx):
                     [f"{n}x {msg}" for msg, n in groups.most_common(6)])]
 
 
-@check("logs", "app-errors")
-def app_errors(ctx):
-    out = ctx.run('journalctl -p err --since "24 hours ago" --no-pager -o json -n 5000 2>/dev/null', timeout=30)
-    groups, sample = collections.Counter(), {}
+def log_errors(ctx, hours=24):
+    """Error-level log messages of the last `hours`, grouped: [{app, unit, count, last, sample}], most frequent first.
+    Kernel messages have their own check; doctor's own "is sudo cached?" probe is left out."""
+    out = ctx.run(f'journalctl -p err --since "{hours} hours ago" --no-pager -o json -n 5000 2>/dev/null', timeout=30)
+    groups = {}
     for line in out.splitlines():
         try:
             e = json.loads(line)
@@ -482,20 +483,29 @@ def app_errors(ctx):
             continue
         if e.get("_TRANSPORT") == "kernel":
             continue
-        src = e.get("_SYSTEMD_USER_UNIT") or e.get("_SYSTEMD_UNIT") or e.get("SYSLOG_IDENTIFIER") or "?"
+        unit = e.get("_SYSTEMD_USER_UNIT") or e.get("_SYSTEMD_UNIT") or ""
+        src = unit or e.get("SYSLOG_IDENTIFIER") or "?"
         msg = e.get("MESSAGE")
-        msg = msg if isinstance(msg, str) else ""
+        msg = msg.strip() if isinstance(msg, str) else ""
         if re.search(r"a password is required ; .*COMMAND=(/usr/bin/true|/usr/bin/bash -c|/bin/bash -c)", msg):
-            continue  # doctor's own "is sudo cached?" probe
+            continue
         key = (app_name(src), normalize(msg)[:90])
-        groups[key] += 1
-        sample.setdefault(key, msg.strip()[:160])
+        g = groups.setdefault(key, {"app": key[0], "unit": unit, "user_unit": bool(e.get("_SYSTEMD_USER_UNIT")),
+                                    "ident": e.get("SYSLOG_IDENTIFIER", ""), "count": 0, "sample": msg[:300], "last": 0})
+        g["count"] += 1
+        g["last"] = max(g["last"], int(e.get("__REALTIME_TIMESTAMP", 0)) / 1e6)
+    return sorted(groups.values(), key=lambda g: -g["count"])
+
+
+@check("logs", "app-errors")
+def app_errors(ctx):
+    groups = log_errors(ctx)
     if not groups:
         return [finding(OK, "No error-level log messages in the last 24 hours")]
-    noisy = [(k, n) for k, n in groups.most_common(8)]
-    level = WARN if any(n >= 100 for _, n in noisy) else INFO
-    return [finding(level, f"{sum(groups.values())} error message(s) logged in the last 24 hours, top sources:",
-                    [f"{n}x {src}: {sample[(src, m)]}" for (src, m), n in noisy] +
+    noisy = groups[:8]
+    level = WARN if any(g["count"] >= 100 for g in noisy) else INFO
+    return [finding(level, f"{sum(g['count'] for g in groups)} error message(s) logged in the last 24 hours, top sources:",
+                    [f"{g['count']}x {g['app']}: {g['sample'][:160]}" for g in noisy] +
                     ["Full list: journalctl -p err --since today"])]
 
 

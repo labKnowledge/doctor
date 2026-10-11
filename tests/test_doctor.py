@@ -133,6 +133,24 @@ class FreeSpace(unittest.TestCase):
         self.assertIn("disk-clean", r.stdout)
 
 
+class Processes(unittest.TestCase):
+    def test_end_asks_then_forces_a_stubborn_process(self):
+        import subprocess
+        from doctor import procs
+        p = subprocess.Popen(["bash", "-c", "trap '' TERM; exec sleep 60"])
+        time.sleep(0.3)
+        d = procs.detail(p.pid)
+        self.assertEqual(d["name"], "sleep")
+        self.assertEqual(d["warning"], "")
+        self.assertEqual(procs.end(p.pid, wait=0.5), "still running")
+        self.assertEqual(procs.end(p.pid, force=True), "ended")
+        p.wait()
+        self.assertIsNone(procs.detail(p.pid))
+        self.assertTrue(procs.risk(1, "systemd"))
+        self.assertIn("desktop", procs.risk(1234, "gnome-shell"))
+        self.assertEqual(procs.end(1), "needs sudo")
+
+
 class Agent(unittest.TestCase):
     def test_prompt_carries_issue_fix_and_context(self):
         from doctor import agent
@@ -152,14 +170,13 @@ class Agent(unittest.TestCase):
 
 
 class Interactive(unittest.TestCase):
-    def test_session_commands_run_without_errors(self):
-        """Drive `doctor i` in a pseudo-terminal through read-only commands (never a fix)."""
-        import pty, re, select
-        cmds = ["more", "1", "s", "b", "m", "disk", "pick", "top", "ports", "kills", "temps", "memory", "boot", "logs", "svc dbus", "m",
-                "history", "nope", "help", "q"]
+    def test_menu_and_screens_run_without_errors(self):
+        """Drive `doctor i` in a pseudo-terminal through read-only screens (never a fix, never a sudo prompt)."""
+        import fcntl, pty, re, select, struct, termios
         pid, fd = pty.fork()
         if pid == 0:
             os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve().parent.parent / "bin/doctor"), "i", "--no-sudo"])
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 140, 0, 0))
         out = b""
 
         def drain(secs):
@@ -171,22 +188,38 @@ class Interactive(unittest.TestCase):
                         out += os.read(fd, 65536)
                     except OSError:
                         return
-        drain(8)
-        for cmd in cmds:
-            os.write(fd, (cmd + "\n").encode())
-            drain(2)
+
+        def send(keys, secs=1.5):
+            os.write(fd, keys.encode())
+            drain(secs)
+        drain(4)
+        send("\x1b[B")                              # arrow down, then a letter jumps
+        send("t", 3); send("\r", 2); send("\r", 2)   # Top apps (live): open the first one's card, back to the list
+        send("s", 3); send("\x1b", 2)               # sort by CPU, Esc back to the menu
+        send("s", 4); send("/dbus\n", 4); send("\n")  # Services: search, then back
+        send("c", 15)                               # Check-up: scans, then the issue list
+        for line in ["more", "1", "s", "b", "q", "ports", "kills", "temps", "memory", "boot", "logs", "disk", "pick",
+                     "history", "nope", "help", "m"]:
+            send(line + "\n", 2)
+        send("b", 2); send("\x1b", 2)               # Big files: the drive picker, Esc back
+        send(":", 2); send("svc dbus\n", 3); send("m\n", 2)   # command line, a service, m from inside it
+        send("\x18", 3)                             # Ctrl+X closes from the menu
         os.waitpid(pid, 0)
-        text = re.sub(r"\x1b\[[\d;]*m", "", out.decode(errors="replace"))
-        self.assertIn("Needs attention", text)
-        self.assertIn("[1/", text)          # walkthrough card
-        self.assertIn("[2/", text)          # s moved on to the next one
-        self.assertIn("Stopped.", text)
+        text = re.sub(r"\x1b\[[\d;?]*[a-zA-Z]", "", out.decode(errors="replace"))
+        self.assertIn("Look closer", text)                 # the main menu comes first, no scan before it
+        self.assertLess(text.index("Look closer"), text.index("Needs attention") if "Needs attention" in text else 10**9)
+        self.assertIn("Top apps · by memory", text)
+        self.assertIn("started by", text)                 # a process card
+        self.assertIn("Top apps · by CPU", text)
+        self.assertIn("Matching 'dbus'", text)
+        self.assertIn("Check-up · limited", text)
+        self.assertIn("[1/", text)
         self.assertGreaterEqual(text.count("[1/"), 2, "b went back to the first issue")
-        self.assertGreaterEqual(text.count("back here"), 3, "m returns to the main menu from a card and from svc")
-        self.assertIn("m menu", text)       # the prompt offers the way back after a focused check
-        self.assertIn("Memory by app", text)
-        self.assertIn("Free space: clean", text)
         self.assertIn("Unknown command 'nope'", text)
+        self.assertIn("Where should I look?", text)
+        self.assertIn("dbus.service", text)
+        self.assertGreaterEqual(text.count("Look closer"), 5, "every screen came back to the main menu")
+        self.assertIn("Closed (Ctrl+X)", text)
         self.assertNotIn("Traceback", text)
 
 

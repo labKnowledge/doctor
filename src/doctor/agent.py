@@ -72,6 +72,37 @@ def ask_prompt(question, report, mode="interactive"):
     return header(mode) + f"The user asks: {question}\n\nTheir latest doctor report (issue numbers match what they see):\n{condensed(report)}"
 
 
+def process_prompt(d, question=None, mode="interactive"):
+    """A running process: what it is, why it runs, whether ending it is safe."""
+    ask = (f"The user asks about this running process: {question}" if question else
+           "Explain this running process: what it is, why it's probably running, and whether it's safe to end "
+           "(what would close or stop, whether it comes back by itself). In interactive mode they end it with k, "
+           "force it with f, or end the whole app with a.")
+    facts = (f"Process {d['name']} (PID {d['pid']}), using {d['rss'] >> 20} MB RAM, {d['threads']} threads, state {d['state']}.\n"
+             f"Started by: {d['parent']} (PID {d['ppid']}). Belongs to: {d['unit'] or 'nothing in particular'}"
+             f"{' (one of the user' + chr(39) + 's own units)' if d['user_unit'] else ''}, {d['group']} process(es) in it.\n"
+             f"Command: {d['cmd'][:600]}" + (f"\nWarning already shown to the user: {d['warning']}" if d["warning"] else ""))
+    return header(mode) + ask + "\n\n" + facts
+
+
+def service_prompt(unit, user, status, log, question=None, mode="interactive"):
+    """A service: what it does, whether this computer needs it, and what the log says."""
+    ask = (f"The user asks about the service {unit}: {question}" if question else
+           f"Explain the service {unit}: what it does, whether a typical desktop needs it, whether anything in its status "
+           "or log is a problem, and what to do. In interactive mode they act on it with r restart, s stop, t start, "
+           "d disable (off now and at boot), e enable.")
+    return (header(mode) + ask + f"\n\nIt is a {'user' if user else 'system'} service. Status:\n{status[:1500]}"
+            f"\n\nRecent log:\n{log[-2500:]}")
+
+
+def row_prompt(screen, about, row, note="", mode="interactive"):
+    """One row of a Look closer screen (a port, a sensor, a startup item, a log line...): explain it to a non-expert."""
+    return (header(mode) + f"The user is on doctor's '{screen}' screen ({about}) and selected this row:\n  {row}\n"
+            + (f"doctor's one-line note about it: {note}\n" if note else "")
+            + "Explain what it is, whether it is normal on a desktop, whether anything needs doing, and what. Check facts "
+              "on the system first if useful (one or two read-only commands).")
+
+
 def stream(prompt, on_text, on_tool, cwd):
     """Run Claude read-only and stream its answer. Returns an error message, or "" on success."""
     argv = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
