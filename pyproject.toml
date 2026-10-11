@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "system-check"
+version = "1.0.0"
+description = "One command to diagnose a Linux desktop (crashes, memory, disks, hardware, services, logs, updates, security) and apply the fixes you pick"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+system-check = "system_check.cli:main"

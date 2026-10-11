@@ -1,0 +1,6 @@
+#!/usr/bin/python3 -I
+# Run system-check straight from this checkout, no install needed.
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "src"))
+from system_check.cli import main
+sys.exit(main())
