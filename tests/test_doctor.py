@@ -6,6 +6,7 @@ from pathlib import Path
 TMP = tempfile.mkdtemp(prefix="doctor-test-")
 os.environ["DOCTOR_DATA"] = TMP
 os.environ["DOCTOR_NO_AGENT"] = "1"  # tests never call the assistant
+os.environ["DOCTOR_NO_REFRESH"] = "1"  # tests never download vulnerability data
 os.environ["DISK_CLEAN_DATA"] = os.path.join(TMP, "disk-clean")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -13,6 +14,7 @@ from doctor import CHECKS, Ctx, run_checks  # noqa: E402
 from doctor.cli import main, parse_numbers, render  # noqa: E402
 from doctor.core import AREAS, RANK, finding, fix, normalize  # noqa: E402
 from doctor.health import app_name  # noqa: E402
+from doctor import vulns  # noqa: E402
 
 
 def fake_report(findings):
@@ -103,6 +105,60 @@ class Live(unittest.TestCase):
             code = main(["fix", "-y"])
         self.assertEqual(code, 1, out.getvalue())
         self.assertIn("0 of 1", out.getvalue())
+
+
+    def test_fix_is_verified_by_its_key(self):
+        r = fake_report([finding("warn", "Gone after fixing", [], fix("noop", "true", root=False), key="test-gone")])
+        for f in r["findings"]:
+            f.update(area="network", check="connectivity")
+        with open(os.path.join(TMP, "last.json"), "w") as fh:
+            json.dump(r, fh)
+        with redirect_stdout(io.StringIO()) as out:
+            main(["fix", "-y"])
+        self.assertIn("verified: fixed: Gone after fixing", out.getvalue())
+
+
+class Vulnerabilities(unittest.TestCase):
+    def test_match_keeps_versions_below_the_fix_and_unfixed_ones(self):
+        cmp = lambda a, b: (a > b) - (a < b)
+        rules = [["CVE-1", "foo", "2", 5.0], ["CVE-2", "foo", "1", 5.0], ["CVE-3", "bar", None, 9.8], ["CVE-4", "gone", "9", 1.0]]
+        self.assertEqual([r[0] for r in vulns.match(rules, {"foo": "1", "bar": "3"}, cmp)], ["CVE-1", "CVE-3"])
+
+    def test_version_compare_follows_debian_rules(self):
+        for lo, hi in [("1.0~rc1", "1.0"), ("2.0", "1:0.1"), ("2.30-0ubuntu2", "2.30-0ubuntu10"), ("1.2", "1.2+esm1"),
+                       ("7:6.1.1-3ubuntu5", "7:6.1.1-3ubuntu5+esm1"), ("1.0a", "1.0+")]:
+            self.assertEqual((vulns.version_compare(lo, hi), vulns.version_compare(hi, lo)), (-1, 1), (lo, hi))
+        self.assertEqual(vulns.version_compare("1.0", "1.0-0"), 0)
+
+    def test_kev_counts_only_when_the_product_names_the_package(self):
+        self.assertFalse(vulns.kev_matches("Oracle", "WebLogic Server", "openjdk-8-jre", "openjdk-8"))
+        self.assertFalse(vulns.kev_matches("Mozilla", "Firefox", "libmozjs-115-0t64", "mozjs115"))
+        self.assertTrue(vulns.kev_matches("Mozilla", "Firefox", "firefox", "firefox"))
+        self.assertTrue(vulns.kev_matches("Linux", "Kernel", "linux-image-7.0.0-38-generic", "linux"))
+
+    def test_reachable_and_exploited_ranks_first(self):
+        row = lambda **k: {"kev": False, "epss": 0.01, "flags": 0, **k}
+        exposed, idle, exploited = row(flags=7), row(epss=0.3), row(kev=True, flags=1)
+        self.assertEqual(sorted([idle, exposed, exploited], key=vulns.score, reverse=True), [exploited, exposed, idle])
+        self.assertTrue(vulns.worth_acting(exposed) and vulns.worth_acting(idle) and not vulns.worth_acting(row()))
+
+    def test_hsi_level_is_the_highest_fully_passed(self):
+        at = lambda lvl, ok: {"HsiLevel": lvl, "Flags": ["success"] if ok else []}
+        self.assertEqual(vulns.hsi_level([at(1, True), at(1, False), at(2, True)]), 0)
+        self.assertEqual(vulns.hsi_level([at(1, True), at(2, True), at(3, False)]), 2)
+
+    def test_unsigned_installs_are_found_in_apt_history(self):
+        hist = ("Start-Date: 2026-03-31  16:22:55\nCommandline: apt-get install -y --allow-unauthenticated asterisk "
+                "asterisk-core-sounds-en-wav\nStart-Date: 2026-04-01  10:00:00\nCommandline: apt-get install vim\n")
+        self.assertEqual(vulns.unsigned_installs(hist), [("2026-03-31", ["asterisk", "asterisk-core-sounds-en-wav"])])
+
+    def test_check_without_data_says_it_is_downloading(self):
+        if not vulns.release():
+            self.skipTest("not Ubuntu")
+        ctx = Ctx(use_sudo=False)
+        ctx._cache.pop("vulns", None)
+        titles = [f["title"] for f in vulns.vulnerabilities(ctx)]
+        self.assertTrue(any("downloading in the background" in t for t in titles), titles)
 
 
 class FreeSpace(unittest.TestCase):

@@ -2,13 +2,13 @@
 list, where Enter walks through the issues (fix, explain, skip); m returns to the main menu from anywhere."""
 import os, re, shlex, shutil, signal, subprocess, sys, textwrap, time
 
-from . import agent, clean, knowledge, learn, menu, probes, procs
+from . import agent, clean, knowledge, learn, menu, probes, procs, vulns
 from .health import log_errors
 from .menu import Column
 from .core import AREAS, CRIT, INFO, OK, RANK, SKIP, WARN, Ctx, human, run_checks
 from .health import meminfo, psi
 
-FOCUSED = ["top", "ports", "svc", "logs", "boot", "kills", "temps", "net", "disk", "malware", "history"]
+FOCUSED = ["top", "ports", "svc", "logs", "boot", "kills", "temps", "net", "disk", "malware", "vulns", "history"]
 SPACE = ["clean", "deep", "pick"]   # free disk space (disk_clean)
 TAKES_ARGS = ("svc", "logs", "deep", "pick")
 COMMANDS = ["more", "menu", "kill", "f", "e", "r", "help", "q"] + FOCUSED + SPACE + AREAS
@@ -29,7 +29,7 @@ HELP = """
   services     every service in one list: open one to restart, stop, start, disable, enable, or explain it
   top          live list of what uses memory and CPU: open one, end it (k), force it (f), explain it (?)
   kill PID     the same for one process you know the number of
-  Look closer  top · ports · svc NAME · logs [NAME] · boot · kills · temps · net · disk · malware · any area name
+  Look closer  top · ports · svc NAME · logs [NAME] · boot · kills · temps · net · disk · vulns · malware · any area name
   !command runs a shell command · Tab completes · m main menu · Ctrl+X quits from anywhere, even mid-task"""
 
 
@@ -65,6 +65,7 @@ MAIN = [
         ("u", "Startup", "what makes boot slow"),
         ("k", "App kills", "apps closed for low memory, last 30 days"),
         ("g", "Logs", "errors in the last 24 hours"),
+        ("v", "Vulnerabilities", "flaws that can actually hurt this computer, and what fixes them"),
         ("r", "Rootkit scan", "rkhunter + chkrootkit, a few minutes"),
     ]),
 ]
@@ -258,7 +259,7 @@ class Session:
             if not q:
                 return
             self.ask(q)
-        elif {"f": self.clean, "h": self.history, "r": self.malware}[key]() == "quiet":
+        elif {"f": self.clean, "h": self.history, "r": self.malware, "v": self.vulns}[key]() == "quiet":
             return   # nothing was shown (declined): no need to wait for a key
         return menu.pause(self.c)
 
@@ -696,6 +697,10 @@ class Session:
             return
         if clean.pick(args.split(), confirm=lambda q: (self.input(q) or "").strip().lower() in ("y", "yes")) == 0 and self.report:
             self.scan(["disk"])
+
+    def vulns(self):
+        vulns.show(self.ctx, self.c)
+        print(self.c("2", "\nFix them from the check-up (c), where each one has a number."))
 
     def malware(self):
         scanner = "/usr/local/sbin/weekly-security-scan.sh"

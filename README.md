@@ -15,6 +15,7 @@ doctor pick 1 3   # delete those items from the last deep scan
 
 doctor history    # what doctor changed, with undo commands
 doctor last       # show the last report again
+doctor vulns      # vulnerabilities that can actually hurt this computer, and what fixes them
 doctor malware    # check-up + full rootkit scan (rkhunter + chkrootkit), a few minutes
 doctor security   # only some areas: stability memory disk hardware services logs updates network security
 ```
@@ -30,13 +31,35 @@ Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!
 | stability | apps killed by systemd-oomd / kernel OOM (and whether it happened after the fix), crash reports in /var/crash, segfaults, core dumps, sessions that ended without a clean shutdown |
 | memory | available RAM, memory stall (PSI), biggest apps, swap on a spinning disk |
 | disk | full or read-only filesystems, inodes, kernel I/O errors, SMART health |
-| hardware | temperatures and thermal throttling, NVIDIA driver and Xid errors, CPU load |
+| hardware | temperatures and thermal throttling, NVIDIA driver and Xid errors, CPU load, firmware updates and firmware protection level (fwupd HSI) |
 | services | failed units and restart loops (system + user), with the reason (missing folder/program, deprecated, missing config, can't send mail); stuck snap jobs; Docker containers unhealthy or restarting, reclaimable images |
 | services (review) | every running service with its real memory (anon, not file cache); "not needed?" suggestions: cups with no working printer, cups-browsed, ModemManager with no modem, Bluetooth with nothing paired, VM agents on real hardware, brltty, unconfigured mail servers, idle gnome-remote-desktop, GNOME Software in the background, a heavy file indexer; always-on remote access (AnyDesk) and public tunnels (ngrok, pinggy, cloudflared…); big services idle for hours. Each comes with a "turn off" fix and the command to undo it |
 | logs | kernel errors and error-level messages of the last 24 h grouped by source; journal retention too short to diagnose |
 | updates | reboot pending, newer kernel installed, security updates, half-installed packages |
 | network | default route, DNS, clock sync |
-| security | chkrootkit daily alerts (files owned by installed packages filtered out, flagged ports checked against what really listens), ufw, ports open to the network (incl. Docker ports that bypass ufw), sshd settings, fail2ban, failed/successful SSH logins, sudo failures, UID-0 and password-less accounts, NOPASSWD sudo, auto security updates, AppArmor, screen lock, ld.so.preload, programs running from /tmp or named like miners, outdated binaries still running, new startup items, authorized_keys changes, ~/.ssh and home permissions, world-writable system files, SUID in temp folders, last rkhunter/chkrootkit result |
+| security | chkrootkit daily alerts (files owned by installed packages filtered out, flagged ports checked against what really listens), ufw, ports open to the network (incl. Docker ports that bypass ufw), sshd settings, fail2ban, failed/successful SSH logins, sudo failures, UID-0 and password-less accounts, NOPASSWD sudo, auto security updates, AppArmor, screen lock, ld.so.preload, programs running from /tmp or named like miners, outdated binaries still running, new startup items, authorized_keys changes, ~/.ssh and home permissions, world-writable system files, SUID in temp folders, last rkhunter/chkrootkit result, CPU flaws (Spectre, Downfall, ...) left unmitigated, packages installed with the signature check off and sources that skip it, **vulnerabilities** (below) |
+
+## Vulnerabilities
+
+A plain scan of a desktop finds thousands of known flaws (CVEs) in installed packages; nobody can act on that, and
+ranking them by severity score (CVSS) points at the wrong ones. doctor shows only the few that can hurt *this*
+computer, and the fewest actions that remove them:
+
+- **Is it vulnerable?** Ubuntu's security data against the installed versions.
+- **Is it being attacked?** CISA's list of exploited vulnerabilities (counted only when CISA's product really is
+  this package: a WebLogic exploit that Ubuntu's data attaches to OpenJDK doesn't count) and EPSS, the chance of
+  exploitation within a month.
+- **Can it be reached here?** Whether the vulnerable code is running, as root, or listening on the network.
+- **What fixes it?** A normal update; Ubuntu Pro (free for personal use) when only Pro ships the fix; removing
+  software nobody has run for 60+ days when nothing else needs it (checked with apt's own simulation); otherwise
+  it's listed to keep an eye on, with what the risk is.
+
+Each action is a numbered fix with an undo line; after `doctor fix` the issue is checked again and reported as
+`verified: fixed` or `still there`. Programs still running old code after a security update are named, so you know
+what to restart. The data (about 15 MB from Canonical, CISA and FIRST/EPSS) downloads in the background at most
+once a day; nothing about this computer is sent anywhere. A check-up only reads a small index of the rules for the
+installed packages. `doctor vulns` (or `v` in `doctor i`) shows the whole picture. Ubuntu only. Design and
+measurements: `docs/research/2026-10-11-vulnerability-triage.md`.
 
 ## Interactive mode
 
@@ -90,7 +113,7 @@ Type a number to see its status and log, then `r` restart, `s` stop, `t` start, 
 
 Look closer at one thing: `top` (memory/CPU right now), `ports` (what listens and who can reach it), `svc NAME`
 (status + log, then restart/stop/disable/enable), `logs [NAME]`, `boot` (slow startup), `kills` (low-memory kills),
-`temps`, `net` (router, internet, DNS, HTTPS timings), `disk` (usage and biggest caches), `malware`, any area name,
+`temps`, `net` (router, internet, DNS, HTTPS timings), `disk` (usage and biggest caches), `vulns`, `malware`, any area name,
 `!command`. Free space without leaving: `clean`, `deep [storage|folder]`, `pick 1 3` (asks before deleting). Tab completes.
 The same focused checks work outside interactive mode: `doctor top`, `doctor ports`, ...
 

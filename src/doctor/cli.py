@@ -1,7 +1,7 @@
 """Command line: doctor [area ...] | fix [n ...|all] | i | ask | clean | deep [where] | pick N | malware | last."""
 import json, os, re, socket, subprocess, sys, tempfile, time
 
-from . import health, review, security  # noqa: F401  (registers the checks)
+from . import health, review, security, vulns  # noqa: F401  (registers the checks)
 from .core import AREAS, CHECKS, CRIT, INFO, OK, SKIP, WARN, Ctx, run_checks
 
 USAGE = """doctor — find out what's wrong with this computer and fix it
@@ -17,6 +17,7 @@ USAGE = """doctor — find out what's wrong with this computer and fix it
   doctor deep [where]  list big things that are safe to remove; where = system (default), storage, a folder
   doctor pick 1 3 5-7  delete those items from the last deep scan
 
+  doctor vulns         vulnerabilities that can actually hurt this computer, and what fixes them
   Look closer: top ports kills temps net boot logs [NAME] history · last (the last report again)
   doctor malware       check-up plus a full rootkit/malware scan (a few minutes)
   doctor memory disk   check only some areas: """ + " ".join(AREAS) + """
@@ -259,6 +260,10 @@ def do_fix(args, yes, no_sudo):
     for f in fresh:
         if f["check"] in names:
             print(f"  {c(COLOR[f['level']], ICON[f['level']])} {f['title']}")
+    still = {f["key"] for f in fresh if f.get("key") and f["level"] in (CRIT, WARN, INFO)}
+    for f in chosen:   # an issue that has a name must be gone afterwards, not just "the command ran"
+        if f.get("key"):
+            print(f"  {c('32', 'verified: fixed') if f['key'] not in still else c('33', 'still there')}: {f['title']}")
     print(f"\n{len(chosen) - failed} of {len(chosen)} fix(es) applied. Run doctor for the full picture.")
     return 1 if failed else 0
 
@@ -296,7 +301,7 @@ def main(argv=None):
         return 0
     if args and re.fullmatch(r"[\d,\-]+|all", args[0]):
         args.insert(0, "fix")  # `doctor 2 4` means fix 2 and 4
-    LOOK = ("top", "ports", "kills", "temps", "net", "boot", "logs", "history")
+    LOOK = ("top", "ports", "kills", "temps", "net", "boot", "logs", "history", "vulns")
     SPACE = ("clean", "deep", "pick")
     cmd = args.pop(0) if args and args[0] in ("fix", "last", "malware", "rootkit", "i", "interactive", "ask", "explain") + LOOK + SPACE else "check"
     if cmd in SPACE:
@@ -309,6 +314,9 @@ def main(argv=None):
             return 2
         return {"clean": clean.clean, "deep": lambda: clean.deep(" ".join(args) or None),
                 "pick": lambda: clean.pick(args)}[cmd]()
+    if cmd == "vulns" and flags & {"--refresh", "--offline"}:   # what the check-up starts in the background
+        from . import vulns
+        return vulns.refresh_cli(Ctx(use_sudo=False), quiet="--quiet" in flags, offline="--offline" in flags)
     if cmd in LOOK or cmd in ("ask", "explain"):
         from .interactive import Session
         s = Session(Ctx(use_sudo=not no_sudo), sys.modules[__name__])
