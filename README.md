@@ -26,6 +26,7 @@ doctor pick 1 3   # delete those items from the last deep scan
 doctor history    # what doctor changed, with undo commands
 doctor last       # show the last report again
 doctor vulns      # vulnerabilities that can actually hurt this computer, and what fixes them
+doctor guard on   # stop API keys and passwords from being committed, in every git repository
 doctor malware    # check-up + full rootkit scan (rkhunter + chkrootkit), a few minutes
 doctor security   # only some areas: stability memory disk hardware services logs updates network security
 ```
@@ -147,6 +148,41 @@ everything else refused without asking (`dontAsk`), no MCP servers, no user/proj
 SSH keys, .env, credential or key files. It can look, never change; fixes stay with you. Without `claude`
 installed everything else works and the assistant hints are hidden. `DOCTOR_NO_AGENT=1` turns it off.
 
+## Commit guard
+
+`doctor guard on` stops API keys, passwords and private keys from leaving in a git commit, in every repository on
+this computer. It's off until you turn it on (the check-up suggests it; `w` in `doctor i`).
+
+```
+doctor guard on                 # level normal; or: doctor guard relaxed | normal | strict
+doctor guard strict --here      # a different level for this repository only (also: off --here)
+doctor guard ignore 'tests/fixtures/*'   # files never checked (add --here for this repository only)
+doctor guard                    # status, and secrets that went into commits in the last 30 days
+doctor guard clear              # you've replaced those keys: take them off the list
+doctor guard off                # git's hooks go back exactly as they were
+```
+
+| Level | Blocks | Warns |
+|---|---|---|
+| relaxed | nothing | every secret it finds |
+| normal | known key formats (AWS, GitHub, GitLab, Slack, Stripe, OpenAI, Anthropic, Google, Hugging Face, npm, PyPI, SendGrid, Telegram, ...), private keys, `.env`, `id_rsa`, `.p12`, keystores | passwords and tokens written into code, passwords in URLs, JWTs, `.pem` |
+| strict | all of the above | |
+
+Only what the commit adds is checked (lock files and minified files are skipped), and secrets are never shown in
+full. A false alarm: put `doctor:allow` on that line, or ignore the file.
+
+**You can always go ahead, and you're still told.** At a terminal it asks "Commit anyway?"; from an editor's commit
+button the commit stops and says how to go ahead: `DOCTOR_GUARD=allow git commit ...`. `git commit --no-verify`
+skips the check, but not the post-commit hook: the commit is scanned right after, and you get a warning in the
+terminal and a desktop notification. Every secret that went into a commit stays on the check-up (security area)
+until you `doctor guard clear` it, marked "already pushed" (replace the key now) or "not pushed yet" (amend it out first).
+
+How: git's global `core.hooksPath` points at `~/.local/share/doctor/git-hooks`. Every hook there runs the guard
+(pre-commit and post-commit only) and then the hook that ran before: the hooks folder that was set globally before
+doctor (kept and restored by `off`), else the repository's own `.git/hooks`, so pre-commit frameworks keep working.
+Repositories that set their own `core.hooksPath` (husky) aren't covered. The hook is plain Python from the
+standard library and lets the commit through if doctor is gone; uninstalling doctor turns the guard off.
+
 ## Free disk space
 
 The disk area warns when a drive fills up; its fix runs `doctor clean`, and the warning names the
@@ -225,6 +261,7 @@ checks run again.
 - `src/doctor/knowledge.py` – plain-words notes for ports, sensors, network steps, startup items, kills and log lines
 - `src/doctor/probes.py` – focused checks as data (top, ports, kills, net, sensors)
 - `src/doctor/agent.py` – read-only Claude assistant (prompting, sandbox flags, streaming)
+- `src/doctor/guard.py` – commit guard: secret scanner, the git hooks, on/off/levels (standard library only)
 - `src/doctor/clean.py` – `clean` / `deep` / `pick` on the command line and in interactive mode
 - `src/disk_clean/` – the disk space library (scan, remove, quick_clean, quick.sh); no doctor imports
 

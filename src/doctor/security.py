@@ -1,7 +1,7 @@
 """Security checks: firewall, exposed ports, SSH, logins, accounts, hardening, suspicious processes, persistence."""
 import collections, glob, os, re, shlex, stat, time
 
-from .core import CRIT, INFO, OK, SKIP, WARN, check, finding, fix, read
+from .core import CRIT, INFO, LAUNCHER, OK, SKIP, WARN, check, finding, fix, read
 
 # Services that should never face the network directly.
 RISKY_PORTS = {2375: "Docker API", 2376: "Docker API", 3306: "MySQL", 5432: "Postgres", 6379: "Redis", 27017: "MongoDB",
@@ -363,4 +363,33 @@ def malware_scan(ctx):
         res.append(finding(WARN, f"Last rootkit scan was {age:.0f} days ago", ["Run one now: doctor malware"]))
     if not infected and not warns and age <= 10:
         res.append(finding(OK, f"Last rootkit scan clean ({age:.0f} day(s) ago)"))
+    return res
+
+
+@check("security", "commit-guard")
+def commit_guard(ctx):
+    """Secrets that went into git commits, and whether the guard that stops them is on."""
+    from . import guard
+    if not ctx.has("git"):
+        return []
+    res = []
+    for r in guard.exposures()[:6]:
+        out = guard.pushed(r)
+        where = f"{r['path']}:{r['line']}" if r.get("line") else r["path"]
+        res.append(finding(CRIT if out else WARN,
+                           f"{r['rule'][:1].upper() + r['rule'][1:]} committed in {os.path.basename(r.get('repo') or '?')} ({where})"
+                           + (", already pushed" if out else ""),
+                           [f"Commit {r.get('commit', '')[:8]}, {r['preview']}; "
+                            + {"bypassed": "the commit check was skipped.", "allowed": "it was let through.",
+                               "warned": "the guard only warned (level relaxed)."}.get(r.get("how"), ""),
+                            "Already on the remote: replace (rotate) this key now; removing it from git is not enough." if out else
+                            "Not pushed yet: remove it and git commit --amend (git rebase -i for older commits), then replace the key to be safe.",
+                            "Dealt with? doctor guard clear"]))
+    if guard.is_on():
+        res.append(finding(OK, f"Commit guard on (level {guard.level_global()})"))
+    else:
+        res.append(finding(INFO, "Commit guard is off: nothing stops an API key or password from being committed",
+                           ["Checks every commit in every repository; blocks keys, private keys and .env files. "
+                            "You can always go ahead anyway, and you're still told.", "Undo: doctor guard off"],
+                           fix("Turn on the commit guard (level normal)", f"{shlex.quote(LAUNCHER)} guard on", root=False, safe=False)))
     return res

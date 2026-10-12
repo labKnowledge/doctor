@@ -20,6 +20,7 @@ elif [[ -L "$HOME/bin/doctor" ]]; then BIN="$HOME/bin"
 else BIN="$HOME/.local/bin"; fi
 
 if [[ "${1:-}" == "--uninstall" ]]; then
+  [[ -x "$DEST/bin/doctor" ]] && "$DEST/bin/doctor" guard off >/dev/null 2>&1 || true   # give git its own hooks back
   for b in "$BIN" "$HOME/bin" "$HOME/.local/bin"; do
     for n in "${NAMES[@]}"; do [[ -L "$b/$n" && "$(readlink "$b/$n")" == "$DEST/"* ]] && rm -f "$b/$n"; done
   done

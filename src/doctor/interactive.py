@@ -55,6 +55,7 @@ MAIN = [
     ]),
     ("Manage", [
         ("s", "Services", "start, stop, turn off at boot"),
+        ("w", "Commit guard", "stop API keys and passwords from being committed"),
         ("h", "History", "what doctor changed, and how to undo it"),
     ]),
     ("Look closer", [
@@ -179,6 +180,11 @@ class Session:
             return f"{n} to look at, from {ago(last['time'])} ago" if n else f"all fine, {ago(last['time'])} ago"
         if key == "s" and g.get("failed"):
             return f"{g['failed']} failing · start, stop, turn off at boot"
+        if key == "w":
+            from . import guard
+            n = len(guard.exposures())
+            state = f"on, {guard.level_global()}" if guard.is_on() else "off"
+            return f"{state} · {n} committed secret{'s' * (n > 1)} to deal with" if n else f"{state} · {default}"
         if key == "f":
             full = [n for n, pct in g.get("drives", []) if pct >= 90]
             return f"{', '.join(full)} {'is' if len(full) == 1 else 'are'} 90%+ full · {default}" if full else default
@@ -259,7 +265,7 @@ class Session:
             if not q:
                 return
             self.ask(q)
-        elif {"f": self.clean, "h": self.history, "r": self.malware, "v": self.vulns}[key]() == "quiet":
+        elif {"f": self.clean, "h": self.history, "w": self.guard, "r": self.malware, "v": self.vulns}[key]() == "quiet":
             return   # nothing was shown (declined): no need to wait for a key
         return menu.pause(self.c)
 
@@ -720,6 +726,22 @@ class Session:
 
     def history(self):
         self.cli.show_history()
+
+    def guard(self):
+        """Commit guard: see it, turn it on at a level, or off."""
+        from . import guard
+        print()
+        self.cli.do_guard([])
+        on = guard.is_on()
+        print(self.c("2", "\n  1 relaxed: warn, never block   2 normal: block keys and secret files   3 strict: block anything like a secret"))
+        k = menu.key("  " + ("Level 1/2/3, 0 turn off" if on else "Turn on: 1/2/3 (2 is a good start)") + self.c("2", ", Enter back › "), flush=True)
+        if k in ("1", "2", "3"):
+            print()
+            self.cli.do_guard([guard.LEVELS[int(k) - 1]])
+        elif k == "0" and on:
+            self.cli.do_guard(["off"])
+        else:
+            return "quiet"
 
     def logs(self, name=""):
         if name:

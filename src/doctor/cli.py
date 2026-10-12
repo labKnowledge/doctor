@@ -18,6 +18,8 @@ USAGE = """doctor — find out what's wrong with this computer and fix it
   doctor pick 1 3 5-7  delete those items from the last deep scan
 
   doctor vulns         vulnerabilities that can actually hurt this computer, and what fixes them
+  doctor guard on      stop API keys, passwords and private keys from being committed, in every git repository
+                       level: doctor guard relaxed|normal|strict (add --here for this repository only) · off
   Look closer: top ports kills temps net boot logs [NAME] history · last (the last report again)
   doctor malware       check-up plus a full rootkit/malware scan (a few minutes)
   doctor memory disk   check only some areas: """ + " ".join(AREAS) + """
@@ -151,6 +153,71 @@ def log_fixes(group, ok):
             undo = next((d for d in f["detail"] if d.startswith("Undo")), "")
             fh.write(json.dumps({"time": time.time(), "label": f["fix"]["label"], "cmd": f["fix"]["cmd"],
                                  "ok": ok, "undo": undo}) + "\n")
+
+
+def log_change(label, undo, ok=True):
+    with open(os.path.join(state_dir(), "fixes.log"), "a") as fh:
+        fh.write(json.dumps({"time": time.time(), "label": label, "cmd": "", "ok": ok, "undo": undo}) + "\n")
+
+
+def do_guard(args, here=False):
+    """doctor guard [on [level] | off | relaxed|normal|strict | ignore GLOB | unignore GLOB | clear] [--here]"""
+    from . import guard
+    what = args[0].lower() if args else ""
+    level = next((a for a in args if a in guard.LEVELS), None)
+    scope = "--local" if here else "--global"
+    if here and not guard.git("rev-parse", "--git-dir"):
+        print("--here works inside a git repository; cd into one first.")
+        return 2
+    if what in ("on", *guard.LEVELS) and not here:
+        was = guard.is_on()
+        print(guard.turn_on(level or (guard.level_global() if was else guard.DEFAULT_LEVEL)))
+        if not was:
+            log_change("Turned on the commit guard", "Undo: doctor guard off")
+        print(c("2", "  Every commit is checked. To go ahead anyway: answer y, or DOCTOR_GUARD=allow git commit ... "
+                     "(git commit --no-verify works too, and you are still told)."))
+        return 0
+    if what in ("off", *guard.LEVELS) and here:
+        guard.git("config", "--local", "doctor.guard", what)
+        print(f"This repository: commit guard {what}." + ("" if guard.is_on() else " (Turn it on first: doctor guard on)"))
+        return 0
+    if what == "off":
+        was = guard.is_on()
+        print(guard.turn_off())
+        if was:
+            log_change("Turned off the commit guard", "Undo: doctor guard on")
+        return 0
+    if what in ("ignore", "unignore"):
+        globs = args[1:]
+        if not globs:
+            print(f"Which files? doctor guard {what} 'tests/fixtures/*'")
+            return 2
+        for g in globs:
+            if what == "ignore":
+                guard.git("config", scope, "--add", "doctor.guardIgnore", g)
+            else:
+                guard.git("config", scope, "--fixed-value", "--unset-all", "doctor.guardIgnore", g)
+        print(("Not checked from now on: " if what == "ignore" else "Checked again: ") + "  ".join(globs))
+        return 0
+    if what == "clear":
+        n = guard.clear()
+        print(f"Cleared {n} committed secret{'s' * (n != 1)} from doctor's list." if n else "Nothing to clear.")
+        return 0
+    if what not in ("", "status"):
+        print(guard.__doc__.split("Levels")[0].strip().splitlines()[0])
+        print("Use: doctor guard [on|off|relaxed|normal|strict] [--here] · ignore GLOB · unignore GLOB · clear")
+        return 2
+    print("\n".join(guard.status_lines()))
+    rows = guard.exposures()
+    if rows:
+        print(c("1", f"\nSecrets that went into commits (last 30 days)"))
+        for r in rows[:15]:
+            where = f"{r['path']}:{r['line']}" if r.get("line") else r["path"]
+            print(f"  {c('31', '✗')} {os.path.basename(r.get('repo') or '?')}  {where}  {r['rule']}  {c('2', r['preview'])}")
+            print(c("2", f"      {time.strftime('%b %d', time.localtime(r['time']))} · commit {r.get('commit', '')[:8]} · "
+                         + {"bypassed": "check skipped (--no-verify)", "allowed": "let through", "warned": "warned only"}.get(r.get("how"), "")))
+        print(c("2", "  Replace (rotate) each key, remove it from the code, then: doctor guard clear"))
+    return 0
 
 
 def show_history(limit=30):
@@ -301,6 +368,8 @@ def main(argv=None):
         return 0
     if args and re.fullmatch(r"[\d,\-]+|all", args[0]):
         args.insert(0, "fix")  # `doctor 2 4` means fix 2 and 4
+    if args[:1] == ["guard"]:
+        return do_guard(args[1:], "--here" in flags)
     LOOK = ("top", "ports", "kills", "temps", "net", "boot", "logs", "history", "vulns")
     SPACE = ("clean", "deep", "pick")
     cmd = args.pop(0) if args and args[0] in ("fix", "last", "malware", "rootkit", "i", "interactive", "ask", "explain") + LOOK + SPACE else "check"
