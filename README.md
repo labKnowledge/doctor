@@ -2,6 +2,16 @@
 
 One command that tells you what's wrong with this computer, fixes it, and frees disk space safely.
 
+## Install
+
+```
+curl -fsSL https://eligapris.com/doctor.sh | bash
+```
+
+Linux (built for Ubuntu), Python 3.9+, nothing else. Installs for your user only, no sudo. Run the same line again to
+update; uninstall with `curl -fsSL https://eligapris.com/doctor.sh | bash -s -- --uninstall`.
+Page: https://eligapris.com/tools/linux-health-check
+
 ```
 doctor            # full check-up, ~3 seconds; asks for sudo once (Ctrl+C skips root-only checks)
 doctor fix        # apply the safe fixes from the last check
@@ -221,5 +231,7 @@ checks run again.
 Add a check: write a function returning `finding(level, title, detail, fix(...))` and decorate it with
 `@check("area", "name")`. State and the last 30 reports live in `~/.local/state/doctor/`.
 
-Install: `./install.sh` (copies to `~/.local/lib/doctor`, links `doctor` and the older names `system-check`, `disk-clean`, `deep`, `pick` into `~/bin`).
+Install from a checkout: `./install.sh` (copies to `~/.local/lib/doctor`, links `doctor` and the older names `system-check`, `disk-clean`, `deep`, `pick` into `~/.local/bin`, or `~/bin` if an earlier install used it).
+Publish a new version: `./release.sh` writes `doctor.sh` and `doctor.tar.gz` into the eligapris-site checkout
+(`public/`); commit and deploy the site.
 Tests: `python3 -m unittest discover -s tests`.
