@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doctor"
-version = "1.0.0"
+version = "1.1.0"
 description = "One command to diagnose a Linux desktop (crashes, memory, disks, hardware, services, logs, updates, security), free disk space safely, and apply the fixes you pick"
 readme = "README.md"
 requires-python = ">=3.9"

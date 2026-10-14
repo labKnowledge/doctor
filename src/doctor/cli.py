@@ -17,6 +17,9 @@ USAGE = """doctor — find out what's wrong with this computer and fix it
   doctor deep [where]  list big things that are safe to remove; where = system (default), storage, a folder
   doctor pick 1 3 5-7  delete those items from the last deep scan
 
+  doctor sysinfo       what this computer is made of: processor, RAM, drives, graphics card, board, and what
+                       most people never find out about theirs (add a part: gpu, cpu, ram, storage, board...)
+  doctor sysinfo explain   the same, with what every line means in plain words
   doctor vulns         vulnerabilities that can actually hurt this computer, and what fixes them
   doctor guard on      stop API keys, passwords and private keys from being committed, in every git repository
                        level: doctor guard relaxed|normal|strict (add --here for this repository only) · off
@@ -220,6 +223,53 @@ def do_guard(args, here=False):
     return 0
 
 
+SYSINFO_COLOR = {"warn": "33", "tip": "36", "info": "2"}
+
+
+def do_sysinfo(args, as_json=False, explain=False, sudo=False, no_sudo=False):
+    """doctor sysinfo [part ...] [explain]: what this computer is made of, what it can do, and what's worth knowing."""
+    import textwrap
+    from . import hardware, sysinfo
+    explain = explain or any(a.lower() in ("explain", "why", "learn") for a in args)
+    parts, bad = sysinfo.resolve([a for a in args if a.lower() not in ("explain", "why", "learn")])
+    if bad:
+        print(f"doctor sysinfo: no part called '{bad[0]}'. Parts: {' '.join(sysinfo.PARTS)} (or gpu, ram, disk, bios...)",
+              file=sys.stderr)
+        return 2
+    ctx = get_sudo(no_sudo) if sudo else Ctx(use_sudo=not no_sudo)
+    facts = hardware.save(hardware.collect(ctx), os.path.join(state_dir(), "sysinfo.json"))
+    sections = sysinfo.build(facts, parts or None)
+    who, line = sysinfo.headline(facts)
+    if as_json:
+        print(json.dumps({"computer": who, "summary": line, "sections": sections, "facts": facts}, indent=1, default=str))
+        return 0
+    width = max(min(__import__("shutil").get_terminal_size((100, 20)).columns, 120) - 8, 50)
+    wrap = lambda text, indent: [c("2", indent + w) for w in textwrap.wrap(text, width - len(indent) + 6)]
+    out = [c("1", who), f"  {line}"]
+    found = sysinfo.worth_knowing(sections)
+    if found:
+        out.append("\n" + c("1", "Worth knowing"))
+        for i, _ in found:
+            out.append(f"  {c(SYSINFO_COLOR[i['level']], sysinfo.ICON[i['level']])} {i['text']}")
+            out += wrap(i["detail"], "      ")
+    taught = set()   # explain each idea once: a second monitor needs no second lesson on refresh rates
+    for s in sections:
+        out.append("\n" + c("1", s["title"].upper()))
+        label_w = max(len(r["label"]) for r in s["rows"]) + 2 if s["rows"] else 10
+        for r in s["rows"]:
+            out.append(f"  {r['label']:<{label_w}}{r['value']}")
+            if explain and r["note"] not in taught:
+                taught.add(r["note"])
+                out += wrap(r["note"], "  " + " " * label_w) + [""]
+    hints = [] if explain else ["doctor sysinfo explain: what every line means"]
+    if not parts:
+        hints.append("doctor sysinfo gpu: one part")
+    hints.append("doctor i, then i: browse it and ask about any line")
+    out.append("\n" + c("2", "  " + " · ".join(hints)))
+    print("\n".join(out))
+    return 0
+
+
 def show_history(limit=30):
     try:
         with open(os.path.join(state_dir(), "fixes.log")) as fh:
@@ -372,7 +422,9 @@ def main(argv=None):
         return do_guard(args[1:], "--here" in flags)
     LOOK = ("top", "ports", "kills", "temps", "net", "boot", "logs", "history", "vulns")
     SPACE = ("clean", "deep", "pick")
-    cmd = args.pop(0) if args and args[0] in ("fix", "last", "malware", "rootkit", "i", "interactive", "ask", "explain") + LOOK + SPACE else "check"
+    if args[:1] in (["hardware"], ["specs"], ["about"]):
+        args[0] = "sysinfo"
+    cmd = args.pop(0) if args and args[0] in ("fix", "last", "malware", "rootkit", "i", "interactive", "ask", "explain", "sysinfo") + LOOK + SPACE else "check"
     if cmd in SPACE:
         from . import clean
         if as_json:  # the library's own CLI already speaks JSON
@@ -383,6 +435,8 @@ def main(argv=None):
             return 2
         return {"clean": clean.clean, "deep": lambda: clean.deep(" ".join(args) or None),
                 "pick": lambda: clean.pick(args)}[cmd]()
+    if cmd == "sysinfo":
+        return do_sysinfo(args, as_json, explain=bool(flags & {"-e", "--explain"}), sudo="--sudo" in flags, no_sudo=no_sudo)
     if cmd == "vulns" and flags & {"--refresh", "--offline"}:   # what the check-up starts in the background
         from . import vulns
         return vulns.refresh_cli(Ctx(use_sudo=False), quiet="--quiet" in flags, offline="--offline" in flags)

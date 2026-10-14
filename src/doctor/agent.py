@@ -14,6 +14,7 @@ READ_ONLY = [
     "nvidia-smi", "sensors", "docker ps", "docker logs", "docker inspect", "docker stats --no-stream", "docker system df",
     "snap list", "snap changes", "snap tasks", "snap services", "apt list", "apt-cache policy", "dpkg -l", "dpkg -S",
     "lpstat", "mmcli -L", "bluetoothctl devices", "ls", "stat", "wc", "file", "which",
+    "udevadm info", "systemd-detect-virt", "nvidia-smi -q", "glxinfo -B", "vulkaninfo --summary",
 ]
 
 SYSTEM = """You are the assistant inside `doctor`, a diagnose-and-fix tool on the user's own Ubuntu desktop.
@@ -68,8 +69,18 @@ def explain_prompt(n, finding, report, mode="interactive"):
             f"\n\nRest of the report for context:\n{condensed(report)}")
 
 
-def ask_prompt(question, report, mode="interactive"):
-    return header(mode) + f"The user asks: {question}\n\nTheir latest doctor report (issue numbers match what they see):\n{condensed(report)}"
+def ask_prompt(question, report, mode="interactive", hardware=""):
+    return (header(mode) + f"The user asks: {question}\n\nTheir latest doctor report (issue numbers match what they see):\n"
+            f"{condensed(report)}" + (f"\n\nWhat this computer is made of (doctor sysinfo):\n{hardware}" if hardware else ""))
+
+
+def device_prompt(row, note, hardware, mode="interactive"):
+    """One line of `doctor sysinfo`: what it means for this computer, in the light of the rest of its hardware."""
+    return (header(mode) + f"The user is on doctor's 'This computer' screen and selected this line:\n  {row}\n"
+            f"doctor's plain-words note about it: {note}\n\nThe whole computer, for context:\n{hardware}\n\n"
+            "Teach it: what it is, what this value means for this particular computer (compare with the rest of its "
+            "hardware and with what's typical today), and anything worth doing about it, with the cost/benefit. "
+            "Check facts on the system first only if needed.")
 
 
 def process_prompt(d, question=None, mode="interactive"):

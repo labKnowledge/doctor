@@ -304,6 +304,7 @@ class Interactive(unittest.TestCase):
         send("t", 3); send("\r", 2); send("\r", 2)   # Top apps (live): open the first one's card, back to the list
         send("s", 3); send("\x1b", 2)               # sort by CPU, Esc back to the menu
         send("s", 5); send("/", 1); send("dbus\n", 4); send("\x1b", 1); send("\x1b", 2)  # Services: find, clear, back
+        send("i", 4); send("\x1b[B", 1); send("\x1b", 2)   # This computer: move, then back
         for screen in "peukg":                      # Ports, Temperatures, Startup, App kills, Logs: move, then back
             send(screen, 6); send("\x1b[B", 1); send("\x1b", 2)
         send("r", 2); send("n", 2)                  # the rootkit scan asks first; n declines
@@ -324,6 +325,7 @@ class Interactive(unittest.TestCase):
         self.assertIn("matching 'dbus'", text)
         for title in ("Ports  ·", "Temperatures  ·", "Startup  ·", "App kills  ·", "Logs  ·"):
             self.assertIn(title, text)
+        self.assertIn("WHAT", text)                        # This computer's list
         self.assertIn("▸", text)                           # the selected row explains itself
         self.assertIn("Start it? y/N", text)
         self.assertIn("Check-up · limited", text)

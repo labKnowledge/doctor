@@ -2,15 +2,15 @@
 list, where Enter walks through the issues (fix, explain, skip); m returns to the main menu from anywhere."""
 import os, re, shlex, shutil, signal, subprocess, sys, textwrap, time
 
-from . import agent, clean, knowledge, learn, menu, probes, procs, vulns
+from . import agent, clean, hardware, knowledge, learn, menu, probes, procs, sysinfo, vulns
 from .health import log_errors
 from .menu import Column
 from .core import AREAS, CRIT, INFO, OK, RANK, SKIP, WARN, Ctx, human, run_checks
 from .health import meminfo, psi
 
-FOCUSED = ["top", "ports", "svc", "logs", "boot", "kills", "temps", "net", "disk", "malware", "vulns", "history"]
+FOCUSED = ["top", "ports", "svc", "logs", "boot", "kills", "temps", "net", "disk", "malware", "vulns", "history", "sysinfo"]
 SPACE = ["clean", "deep", "pick"]   # free disk space (disk_clean)
-TAKES_ARGS = ("svc", "logs", "deep", "pick")
+TAKES_ARGS = ("svc", "logs", "deep", "pick", "sysinfo")
 COMMANDS = ["more", "menu", "kill", "f", "e", "r", "help", "q"] + FOCUSED + SPACE + AREAS
 
 HELP = """
@@ -28,8 +28,9 @@ HELP = """
                pick 1 3   delete those from the last deep scan (asks first)
   services     every service in one list: open one to restart, stop, start, disable, enable, or explain it
   top          live list of what uses memory and CPU: open one, end it (k), force it (f), explain it (?)
+  sysinfo [gpu]  this computer's parts, what they can do and what's worth knowing; each line explains itself
   kill PID     the same for one process you know the number of
-  Look closer  top · ports · svc NAME · logs [NAME] · boot · kills · temps · net · disk · vulns · malware · any area name
+  Look closer  top · ports · svc NAME · logs [NAME] · boot · kills · temps · net · disk · vulns · sysinfo · malware · any area name
   !command runs a shell command · Tab completes · m main menu · Ctrl+X quits from anywhere, even mid-task"""
 
 
@@ -59,6 +60,7 @@ MAIN = [
         ("h", "History", "what doctor changed, and how to undo it"),
     ]),
     ("Look closer", [
+        ("i", "This computer", "processor, RAM, drives, graphics card: what they are and can do"),
         ("t", "Top apps", "what uses memory and CPU now · end what's stuck"),
         ("p", "Ports", "what listens, and who can reach it"),
         ("n", "Network", "router, internet and DNS speed"),
@@ -252,7 +254,7 @@ class Session:
             return self.services()
         if key == "b":
             return self.big_files()
-        screens = {"t": self.top_live, "p": self.look_ports, "n": self.look_net, "e": self.look_temps,
+        screens = {"i": self.look_sysinfo, "t": self.top_live, "p": self.look_ports, "n": self.look_net, "e": self.look_temps,
                    "u": self.look_boot, "k": self.look_kills, "g": self.look_logs}
         if key in screens:
             return screens[key]()
@@ -476,7 +478,11 @@ class Session:
         if not self.report:
             self.report = self.cli.load_last() or {"findings": []}
             self._number()
-        self._agent(agent.ask_prompt(question, {"issues": self.issues, "findings": self.report["findings"]}, self.mode))
+        try:
+            parts = sysinfo.as_text(self.hardware())
+        except Exception:   # the assistant still answers from the report alone
+            parts = ""
+        self._agent(agent.ask_prompt(question, {"issues": self.issues, "findings": self.report["findings"]}, self.mode, parts))
 
     def _agent(self, prompt):
         if not agent.available():
@@ -881,6 +887,49 @@ class Session:
             Column("PROGRAM", 34, lambda r: r[3])],
             note=lambda r: knowledge.port(*r), enter=("program details", details), actions=[("k", "end the program", end)],
             empty="Nothing is waiting for connections.")
+
+    def sysinfo(self, parts=""):
+        keys, bad = sysinfo.resolve(parts.split())
+        if bad:
+            print(f"No part called '{bad[0]}'. Parts: {' '.join(sysinfo.PARTS)}")
+            return
+        return self.look_sysinfo(keys)
+
+    def hardware(self, fresh=False):
+        """This computer's parts: collected now (fresh) or reused for a week (the assistant's background knowledge)."""
+        path = os.path.join(self.cli.state_dir(), "sysinfo.json")
+        return hardware.save(hardware.collect(self.ctx), path) if fresh else hardware.cached(self.ctx, path)
+
+    def look_sysinfo(self, parts=None):
+        """This computer, one line per fact: what's worth knowing first, then each part. The selected line teaches
+        what it means; ? relates it to the rest of this computer, o opens a session to learn more."""
+        st = {"facts": self.hardware(fresh=True)}
+
+        def load():
+            facts = st.pop("facts", None) or self.hardware(fresh=True)   # r re-reads the hardware
+            st["text"] = sysinfo.as_text(facts)
+            rows = []
+            sections = sysinfo.build(facts, parts or None)
+            for i, s in sysinfo.worth_knowing(sections):
+                rows.append({"icon": sysinfo.ICON[i["level"]], "part": s["key"], "label": "worth knowing",
+                             "value": i["text"], "note": i["detail"]})
+            for s in sections:
+                rows += [{"icon": " ", "part": s["key"], "label": r["label"].strip(), "value": r["value"], "note": r["note"]}
+                         for r in s["rows"]]
+            return rows
+
+        line = lambda r: f"{sysinfo.TITLES[r['part']]}, {r['label']}: {r['value']}"
+        who, summary = sysinfo.headline(st["facts"])
+        self.look(who, summary, load, [
+            Column(" ", 1, lambda r: r["icon"]), Column("PART", 9, lambda r: r["part"]),
+            Column("WHAT", 16, lambda r: r["label"]), Column("", 80, lambda r: r["value"])],
+            note=lambda r: r["note"],
+            explain=(lambda r: self._agent(agent.device_prompt(line(r), r["note"], st.get("text", ""), self.mode)))
+            if agent.available() else None,
+            learn=(lambda r: self.learn(f"my computer's {sysinfo.TITLES[r['part']].lower()}: {r['label']}",
+                                        f"Selected line: {line(r)}\ndoctor's note: {r['note']}\n\nThe whole computer:\n{st.get('text', '')}"))
+            if learn.available() else None,
+            empty="Nothing could be read about this computer's parts.")
 
     def look_net(self):
         cache = {}

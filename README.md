@@ -25,6 +25,8 @@ doctor pick 1 3   # delete those items from the last deep scan
 
 doctor history    # what doctor changed, with undo commands
 doctor last       # show the last report again
+doctor sysinfo    # what this computer is made of, what it can do, and what's worth knowing about it
+doctor sysinfo explain   # the same, with what every line means; add a part: gpu, cpu, ram, storage, board...
 doctor vulns      # vulnerabilities that can actually hurt this computer, and what fixes them
 doctor guard on   # stop API keys and passwords from being committed, in every git repository
 doctor malware    # check-up + full rootkit scan (rkhunter + chkrootkit), a few minutes
@@ -49,6 +51,38 @@ Exit code: 0 all fine, 1 warnings, 2 problems. From omnish chat: `!syscheck`, `!
 | updates | reboot pending, newer kernel installed, security updates, half-installed packages |
 | network | default route, DNS, clock sync |
 | security | chkrootkit daily alerts (files owned by installed packages filtered out, flagged ports checked against what really listens), ufw, ports open to the network (incl. Docker ports that bypass ufw), sshd settings, fail2ban, failed/successful SSH logins, sudo failures, UID-0 and password-less accounts, NOPASSWD sudo, auto security updates, AppArmor, screen lock, ld.so.preload, programs running from /tmp or named like miners, outdated binaries still running, new startup items, authorized_keys changes, ~/.ssh and home permissions, world-writable system files, SUID in temp folders, last rkhunter/chkrootkit result, CPU flaws (Spectre, Downfall, ...) left unmitigated, packages installed with the signature check off and sources that skip it, **vulnerabilities** (below) |
+
+## This computer
+
+`doctor sysinfo` (or `i` in `doctor i`) says what the computer is made of and what that means, in about half a
+second, without sudo:
+
+| Part | Shows |
+|---|---|
+| system | model and kind (desktop, laptop...), Ubuntu release, kernel, time since restart, Wayland or X11, virtual machine |
+| processor | name, generation and year, cores and threads (performance/efficiency cores), base and boost speed, cache, AVX2/AVX-512/AES/virtualization, power mode, microcode |
+| memory | each stick (size, maker, part number to buy a matching one), slots used and free, the board's maximum, rated vs configured speed, single or dual channel, ECC, swap in use |
+| storage | every drive: NVMe/SATA SSD/hard drive, its PCIe lanes and top speed, each partition's use; wear, hours and data written with `--sudo` |
+| graphics | each GPU: built-in or card, maker, video memory and which programs use it, driver, PCIe link, power and heat, CUDA level, Resizable BAR, the biggest AI model that fits; every monitor with its name, resolution and top refresh rate |
+| board | motherboard, firmware version and age, UEFI and Secure Boot, TPM |
+| battery | charge, health (how much of its first capacity it holds), cycles |
+| network | each adapter's chip and link speed |
+
+It opens with **Worth knowing**: what most people never find out about their own machine. The monitor is plugged into
+the motherboard instead of the graphics card. One RAM stick means it runs in single channel. RAM runs below its rated
+speed (XMP/EXPO off). Memory runs short, with the upgrade path this board allows. Ubuntu runs from a hard drive. A
+graphics card is on fewer PCIe lanes than it's built for, on the slow open-source driver, or power-limited. The
+processor is years older than the graphics card and holds it back in games. Resizable BAR is off on a platform that
+supports it. The monitor can do 144 Hz. The SSD is worn, TRIM is off, the firmware is years old, Secure Boot is off,
+the battery is worn, the network cable links at 100 Mb/s. Each insight says what to do, and none of them shows up on a
+computer that doesn't need it.
+
+`doctor sysinfo explain` puts a plain-words note under every line: what it is, and what this value means for this
+computer. Name a part to see only that: `doctor sysinfo gpu`, `doctor sysinfo ram explain` (also cpu, storage/disk,
+board/bios, battery, network, system). `--json` for scripts. In `doctor i` the same lines are a list: the selected
+line explains itself under the list, `?` has the assistant relate it to the rest of the computer ("is 2133 MT/s slow
+for this processor?"), `o` opens a learning session about it. The assistant also knows the hardware when you ask
+anything else (`doctor ask "can this run Llama 70B?"`); it reuses what was read in the last week.
 
 ## Vulnerabilities
 
@@ -91,7 +125,7 @@ Manage
     s  Services               2 failing · start, stop, turn off at boot
     h  History                what doctor changed, and how to undo it
 Look closer
-    t  Top apps · p Ports · n Network · e Temperatures · u Startup · k App kills · g Logs · r Rootkit scan
+    i  This computer · t Top apps · p Ports · n Network · e Temperatures · u Startup · k App kills · g Logs · r Rootkit scan
 ```
 
 Arrow keys and Enter, or press an entry's letter. `:` opens the command line (`help` lists every command),
@@ -104,7 +138,7 @@ wrong and the exact commands its fix runs; Enter applies the fix (or moves on), 
 `s` skips, `b` goes back one. The fixed check is re-run on the spot. Or type a number to jump to an issue,
 `f safe` for every safe fix, or ask anything in plain words.
 
-Every Look closer screen (Top apps, Ports, Network, Temperatures, Startup, App kills, Logs, Services) is a list you
+Every Look closer screen (This computer, Top apps, Ports, Network, Temperatures, Startup, App kills, Logs, Services) is a list you
 move through with the arrow keys (PgUp/PgDn/Home/End too). The selected row explains itself in plain words under the
 list ("Port 22 is SSH... Remote access: make sure you set this up on purpose"), `?` asks the assistant for more,
 Enter acts on it (open the program, the service, or the full log), `/` finds, `r` refreshes, Esc goes back.
@@ -260,6 +294,8 @@ checks run again.
 - `src/doctor/learn.py` – learn more: writes a session's context and opens Claude in a new terminal window
 - `src/doctor/knowledge.py` – plain-words notes for ports, sensors, network steps, startup items, kills and log lines
 - `src/doctor/probes.py` – focused checks as data (top, ports, kills, net, sensors)
+- `src/doctor/hardware.py` – what the computer is made of, as data (sysfs, udev, lscpu, lsblk, lspci, nvidia-smi; smartctl with sudo)
+- `src/doctor/sysinfo.py` – those facts in plain words: rows that explain themselves, and what's worth knowing (pure, no system access)
 - `src/doctor/agent.py` – read-only Claude assistant (prompting, sandbox flags, streaming)
 - `src/doctor/guard.py` – commit guard: secret scanner, the git hooks, on/off/levels (standard library only)
 - `src/doctor/clean.py` – `clean` / `deep` / `pick` on the command line and in interactive mode
